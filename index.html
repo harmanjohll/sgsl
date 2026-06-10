@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SgSL Studio — Singapore Sign Language</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <h1><span class="logo">🤟</span> SgSL Studio</h1>
+    <p class="tagline">Learn, read and show Singapore Sign Language fingerspelling — right in your browser.</p>
+    <nav id="tabs">
+      <button class="tab active" data-panel="lookup">Show me a sign</button>
+      <button class="tab" data-panel="read">Read my signs</button>
+      <button class="tab" data-panel="practice">Practice</button>
+      <button class="tab" data-panel="alphabet">Alphabet</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ LOOKUP: word/phrase → sign ============ -->
+    <section id="panel-lookup" class="panel active">
+      <div class="cols">
+        <div class="col">
+          <h2>Type a word or phrase</h2>
+          <form id="lookup-form" autocomplete="off">
+            <input id="lookup-input" type="text" placeholder="e.g. thank you" maxlength="60" />
+            <button type="submit" class="primary">Sign it</button>
+          </form>
+          <div id="lookup-card" class="card hidden">
+            <h3 id="lookup-word"></h3>
+            <p id="lookup-desc"></p>
+            <p class="fineprint">Full signs use movement, both hands and facial expression — the avatar
+              shows the fingerspelling; the description above explains the actual sign.
+              Verify with <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">the SgSL Sign Bank</a> or
+              <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">SADeaf</a>.</p>
+          </div>
+          <div id="lookup-known" class="chips"></div>
+        </div>
+        <div class="col">
+          <h2>Avatar</h2>
+          <canvas id="avatar-canvas" width="420" height="440"></canvas>
+          <div class="controls">
+            <button id="replay-btn">▶ Replay</button>
+            <label>Speed
+              <select id="speed-sel">
+                <option value="0.6">Slow</option>
+                <option value="1" selected>Normal</option>
+                <option value="1.6">Fast</option>
+              </select>
+            </label>
+          </div>
+          <p id="spelled-so-far" class="spelled"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ READ: gesture → text/word ============ -->
+    <section id="panel-read" class="panel">
+      <div class="cols">
+        <div class="col">
+          <h2>Camera</h2>
+          <div class="camera-box">
+            <video id="video" playsinline muted></video>
+            <canvas id="overlay"></canvas>
+            <div id="cam-status" class="cam-status">Camera off</div>
+          </div>
+          <div class="controls">
+            <button id="cam-btn" class="primary">Start camera</button>
+          </div>
+          <p class="fineprint">Hold a fingerspelling handshape steady facing the camera.
+            The video never leaves your device — all processing is local.
+            J and Z involve motion and are not auto-detected yet (the avatar can still show them).</p>
+        </div>
+        <div class="col">
+          <h2>What I see</h2>
+          <div class="live-letter">
+            <div id="live-letter">–</div>
+            <svg id="hold-ring" viewBox="0 0 56 56">
+              <circle class="ring-bg" cx="28" cy="28" r="24"/>
+              <circle id="ring-fg" class="ring-fg" cx="28" cy="28" r="24"/>
+            </svg>
+          </div>
+          <div id="candidates" class="candidates"></div>
+          <h3>Spelled text</h3>
+          <div id="typed" class="typed">&nbsp;</div>
+          <div class="controls">
+            <button id="space-btn">Space</button>
+            <button id="backspace-btn">⌫ Backspace</button>
+            <button id="clear-btn">Clear</button>
+          </div>
+          <h3>Matching words</h3>
+          <div id="suggestions" class="chips"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PRACTICE ============ -->
+    <section id="panel-practice" class="panel">
+      <div class="cols">
+        <div class="col">
+          <h2>Target</h2>
+          <div class="practice-target">
+            <div id="practice-letter">A</div>
+            <canvas id="practice-avatar" width="300" height="320"></canvas>
+          </div>
+          <div class="controls">
+            <button id="practice-start" class="primary">Start practice</button>
+            <button id="practice-skip">Skip ›</button>
+            <label>Mode
+              <select id="practice-mode">
+                <option value="letters">Random letters</option>
+                <option value="word">Spell a word</option>
+              </select>
+            </label>
+          </div>
+          <input id="practice-word" class="hidden" type="text" placeholder="word to practise, e.g. hello (J/Z skipped)" maxlength="30" />
+          <p id="practice-progress" class="spelled"></p>
+        </div>
+        <div class="col">
+          <h2>Your hand</h2>
+          <div class="camera-box">
+            <video id="p-video" playsinline muted></video>
+            <canvas id="p-overlay"></canvas>
+            <div id="p-cam-status" class="cam-status">Camera off</div>
+          </div>
+          <div class="scorebar"><div id="match-bar"></div></div>
+          <p class="scoreline">Streak: <span id="streak">0</span> · Signed: <span id="score">0</span></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ ALPHABET REFERENCE ============ -->
+    <section id="panel-alphabet" class="panel">
+      <h2>SgSL manual alphabet</h2>
+      <p class="fineprint">SgSL fingerspelling follows the ASL manual alphabet, except
+        <strong>T</strong>, which is modified locally (the ASL T handshape is offensive in Singapore).
+        Click any letter to see it animated.</p>
+      <div id="alpha-grid" class="alpha-grid"></div>
+      <div class="cols">
+        <div class="col">
+          <canvas id="alpha-canvas" width="380" height="400"></canvas>
+        </div>
+        <div class="col">
+          <h3 id="alpha-letter"></h3>
+          <p id="alpha-desc"></p>
+          <p id="alpha-note" class="note hidden"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>SgSL Studio is an independent learning aid, not an official SADeaf resource.
+      SgSL blends Shanghainese Sign Language, ASL, SEE and local signs — learn from the community:
+      <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">Singapore Association for the Deaf</a> ·
+      <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">NTU SgSL Sign Bank</a> ·
+      <a href="https://www.deaf.sg/" target="_blank" rel="noopener">deaf.sg</a></p>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
