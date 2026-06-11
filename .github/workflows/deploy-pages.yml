@@ -2,7 +2,7 @@ name: Deploy SgSL Studio to GitHub Pages
 
 on:
   push:
-    branches: [claude/sgsl-gesture-sign-app-nez52z]
+    branches: [main, claude/sgsl-gesture-sign-app-nez52z]
   workflow_dispatch:
 
 permissions:
