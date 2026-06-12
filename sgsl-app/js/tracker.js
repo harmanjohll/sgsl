@@ -18,6 +18,27 @@ const CONNECTIONS = [
   [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
 ];
 
+// The landmarker is shared across Tracker instances (read + practice modes)
+// so the ~10 MB model is downloaded and initialised only once.
+let landmarkerPromise = null;
+
+async function loadLandmarker() {
+  const vision = await import(`${CDN}/vision_bundle.mjs`);
+  const fileset = await vision.FilesetResolver.forVisionTasks(`${CDN}/wasm`);
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+    runningMode: "VIDEO",
+    numHands: 1,
+    minHandDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+  });
+  try {
+    return await vision.HandLandmarker.createFromOptions(fileset, opts("GPU"));
+  } catch {
+    return await vision.HandLandmarker.createFromOptions(fileset, opts("CPU"));
+  }
+}
+
 export class Tracker {
   constructor(video, overlay) {
     this.video = video;
@@ -33,25 +54,12 @@ export class Tracker {
   async init(statusCb = () => {}) {
     if (this.landmarker) return;
     statusCb("Loading hand-tracking model…");
-    const vision = await import(`${CDN}/vision_bundle.mjs`);
-    const fileset = await vision.FilesetResolver.forVisionTasks(`${CDN}/wasm`);
-    const opts = (delegate) => ({
-      baseOptions: { modelAssetPath: MODEL_URL, delegate },
-      runningMode: "VIDEO",
-      numHands: 1,
-      minHandDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    if (!landmarkerPromise) landmarkerPromise = loadLandmarker();
     try {
-      this.landmarker = await vision.HandLandmarker.createFromOptions(
-        fileset,
-        opts("GPU")
-      );
-    } catch {
-      this.landmarker = await vision.HandLandmarker.createFromOptions(
-        fileset,
-        opts("CPU")
-      );
+      this.landmarker = await landmarkerPromise;
+    } catch (err) {
+      landmarkerPromise = null; // allow retry after a transient network error
+      throw err;
     }
     statusCb("");
   }

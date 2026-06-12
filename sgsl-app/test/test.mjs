@@ -17,7 +17,7 @@ import {
   REST_POSE,
   poseFor,
 } from "../js/poses.js";
-import { classify, normalize, MAX_DIST } from "../js/classifier.js";
+import { classify, normalize, MAX_DIST, Smoother } from "../js/classifier.js";
 import { DICTIONARY } from "../js/dictionary.js";
 
 let pass = 0;
@@ -160,6 +160,52 @@ for (const e of DICTIONARY) {
 }
 for (const l of Object.keys(LETTER_POSES)) {
   check(`letter ${l} buildable`, handLandmarks(LETTER_POSES[l]).length === 21);
+}
+
+/* ---- 7. temporal smoothing ---- */
+{
+  // Letters commit after a steady hold...
+  const s = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  let t = 0;
+  const commits = [];
+  // 90 frames ≈ 3s: first commit at 0.7s, repeat at 0.7+1.4s, third would
+  // need 3.5s — so exactly two commits expected.
+  for (let i = 0; i < 90; i++) {
+    t += 33; // ~30 fps
+    const { committed } = s.push("A", t);
+    if (committed) commits.push(committed);
+  }
+  check("smoother commits held letter", commits[0] === "A", `got ${commits[0]}`);
+  check(
+    "smoother repeat needs longer hold",
+    commits.length === 2,
+    `commits in 3s: ${commits.length}`
+  );
+
+  // Flickering candidates must not commit anything.
+  const s2 = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  t = 0;
+  let flickerCommits = 0;
+  const seq = ["A", "B", null, "A", "C", "B", null, "A", "B", "C"];
+  for (let i = 0; i < 60; i++) {
+    t += 33;
+    if (s2.push(seq[i % seq.length], t).committed) flickerCommits++;
+  }
+  check("smoother rejects flicker", flickerCommits === 0, `${flickerCommits} commits`);
+
+  // Losing the hand resets the hold.
+  const s3 = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  t = 0;
+  let earlyCommit = false;
+  for (let i = 0; i < 15; i++) {
+    t += 33;
+    if (s3.push("A", t).committed) earlyCommit = true;
+  }
+  for (let i = 0; i < 15; i++) {
+    t += 33;
+    if (s3.push(null, t).committed) earlyCommit = true;
+  }
+  check("smoother no commit on short hold + loss", !earlyCommit);
 }
 
 /* ---- report ---- */
