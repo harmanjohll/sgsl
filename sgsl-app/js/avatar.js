@@ -112,6 +112,8 @@ export class Avatar {
   stop() {
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = null;
     this.queue = [];
     this.playing = false;
   }
@@ -135,7 +137,7 @@ export class Avatar {
     if (item.pause) {
       this.caption = "";
       this.draw(this.current);
-      setTimeout(() => this._playNext(), item.pause / this.speed);
+      this._timer = setTimeout(() => this._playNext(), item.pause / this.speed);
       return;
     }
     const target = handLandmarks(item.pose);
@@ -143,11 +145,11 @@ export class Avatar {
     if (this.onLetter) this.onLetter(item.label);
     this._animateTo(target, 300 / this.speed, () => {
       if (item.pose.motion) {
-        this._playMotion(item.pose, target, () =>
-          setTimeout(() => this._playNext(), 250 / this.speed)
-        );
+        this._playMotion(item.pose, target, () => {
+          this._timer = setTimeout(() => this._playNext(), 250 / this.speed);
+        });
       } else {
-        setTimeout(() => this._playNext(), 650 / this.speed);
+        this._timer = setTimeout(() => this._playNext(), 650 / this.speed);
       }
     });
   }

@@ -60,6 +60,21 @@ export const DICTIONARY = [
   { word: "singapore", description: "Commonly fingerspelled S-G or signed with a local sign — check the SgSL Sign Bank for the current community sign." },
 ];
 
+// Days and months come from the sign lexicon so descriptions stay in sync.
+import { SIGNS, MONTH_SPELLINGS } from "./signs.js";
+
+for (const day of [
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+]) {
+  DICTIONARY.push({ word: day, description: SIGNS[day].description });
+}
+for (const [month, spelling] of Object.entries(MONTH_SPELLINGS)) {
+  DICTIONARY.push({
+    word: month,
+    description: `Fingerspelled ${spelling.split("").join("-")} — months are fingerspelled (abbreviated when long).`,
+  });
+}
+
 const byWord = new Map(DICTIONARY.map((e) => [e.word, e]));
 
 export function lookupWord(word) {

@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1><span class="logo">🤟</span> SgSL Studio</h1>
-    <p class="tagline">Learn, read and show Singapore Sign Language fingerspelling — right in your browser.</p>
+    <p class="tagline">Learn, read and show Singapore Sign Language — a signing avatar with real signs, plus fingerspelling, right in your browser.</p>
     <nav id="tabs">
       <button class="tab active" data-panel="lookup">Show me a sign</button>
       <button class="tab" data-panel="read">Read my signs</button>
@@ -30,17 +30,18 @@
           </form>
           <div id="lookup-card" class="card hidden">
             <h3 id="lookup-word"></h3>
-            <p id="lookup-desc"></p>
-            <p class="fineprint">Full signs use movement, both hands and facial expression — the avatar
-              shows the fingerspelling; the description above explains the actual sign.
-              Verify with <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">the SgSL Sign Bank</a> or
-              <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">SADeaf</a>.</p>
+            <div id="lookup-desc"></div>
+            <p class="fineprint">The avatar performs the lexical sign (two hands, body locations and
+              facial grammar) for words it knows, and fingerspells the rest. Animations are simplified
+              schematics — verify with <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">the SgSL Sign Bank</a> or
+              <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">SADeaf</a> videos.</p>
           </div>
           <div id="lookup-known" class="chips"></div>
         </div>
         <div class="col">
           <h2>Avatar</h2>
-          <canvas id="avatar-canvas" width="420" height="440"></canvas>
+          <div id="avatar-picker" class="chips" style="margin-bottom:10px"></div>
+          <canvas id="avatar-canvas" width="420" height="470"></canvas>
           <div class="controls">
             <button id="replay-btn">▶ Replay</button>
             <label>Speed

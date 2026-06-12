@@ -5,6 +5,8 @@
  */
 
 import { Avatar } from "./avatar.js";
+import { BodyAvatar } from "./body-avatar.js";
+import { SIGNS } from "./signs.js";
 import { classify, Smoother, MAX_DIST } from "./classifier.js";
 import { Tracker } from "./tracker.js";
 import { DICTIONARY, lookupWord, suggest } from "./dictionary.js";
@@ -29,11 +31,32 @@ tabs.forEach((tab) =>
 );
 
 /* ---------------- lookup mode ---------------- */
-const avatar = new Avatar($("avatar-canvas"));
+import { AVATARS } from "./body-model.js";
+
+const savedAvatar = localStorage.getItem("sgsl-avatar") || "wei";
+const avatar = new BodyAvatar($("avatar-canvas"), savedAvatar);
 let lastSpelled = "";
 
-avatar.onLetter = (l) => {
-  $("spelled-so-far").textContent += l;
+// avatar picker
+const picker = $("avatar-picker");
+for (const [key, a] of Object.entries(AVATARS)) {
+  const chip = document.createElement("button");
+  chip.className = "chip" + (key === avatar.avatarKey ? " selected-chip" : "");
+  chip.textContent = a.label;
+  chip.addEventListener("click", () => {
+    avatar.setAvatar(key);
+    localStorage.setItem("sgsl-avatar", key);
+    picker
+      .querySelectorAll(".chip")
+      .forEach((c) => c.classList.toggle("selected-chip", c === chip));
+  });
+  picker.appendChild(chip);
+}
+
+avatar.onItem = (label, kind) => {
+  const trail = $("spelled-so-far");
+  trail.textContent +=
+    (kind === "sign" ? `✋${label.toUpperCase()}` : label.toUpperCase()) + "  ";
 };
 
 function doLookup(text) {
@@ -41,19 +64,30 @@ function doLookup(text) {
   if (!clean) return;
   lastSpelled = clean;
   $("spelled-so-far").textContent = "";
-  const entry = lookupWord(clean);
-  const card = $("lookup-card");
-  if (entry) {
-    $("lookup-word").textContent = entry.word.toUpperCase();
-    $("lookup-desc").textContent = entry.description;
-    card.classList.remove("hidden");
-  } else {
-    $("lookup-word").textContent = clean.toUpperCase();
-    $("lookup-desc").textContent =
-      "Not in the built-in dictionary yet — the avatar will fingerspell it letter by letter.";
-    card.classList.remove("hidden");
+  const items = avatar.sign(clean);
+  if (!items.length) return;
+
+  // Explain, per word, whether a lexical sign or fingerspelling is used.
+  const lines = items.map((it) => {
+    if (it.kind === "sign") {
+      const desc =
+        (SIGNS[it.word] && SIGNS[it.word].description) ||
+        (lookupWord(it.word) || {}).description ||
+        "";
+      return `✋ ${it.word.toUpperCase()} — lexical sign: ${desc}`;
+    }
+    if (it.note) return `🔤 ${it.word.toUpperCase()} — ${it.note}`;
+    return `🔤 ${it.word.toUpperCase()} — no lexical sign in the library yet, fingerspelled letter by letter.`;
+  });
+  $("lookup-word").textContent = clean.toUpperCase();
+  $("lookup-desc").innerHTML = "";
+  for (const line of lines) {
+    const p = document.createElement("div");
+    p.textContent = line;
+    p.style.marginBottom = "6px";
+    $("lookup-desc").appendChild(p);
   }
-  avatar.spell(clean);
+  $("lookup-card").classList.remove("hidden");
 }
 
 $("lookup-form").addEventListener("submit", (e) => {
@@ -63,7 +97,7 @@ $("lookup-form").addEventListener("submit", (e) => {
 $("replay-btn").addEventListener("click", () => {
   if (lastSpelled) {
     $("spelled-so-far").textContent = "";
-    avatar.spell(lastSpelled);
+    avatar.sign(lastSpelled);
   }
 });
 $("speed-sel").addEventListener("change", (e) => {

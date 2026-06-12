@@ -102,6 +102,7 @@ button:disabled { opacity: 0.5; cursor: wait; }
   border: 1px solid transparent;
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.selected-chip { background: var(--accent); color: #0c2b22; font-weight: 700; }
 
 canvas#avatar-canvas, canvas#practice-avatar, canvas#alpha-canvas {
   background: radial-gradient(circle at 50% 35%, #243049 0%, #1a2236 75%);

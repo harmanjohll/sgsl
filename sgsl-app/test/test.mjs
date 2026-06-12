@@ -17,7 +17,7 @@ import {
   REST_POSE,
   poseFor,
 } from "../js/poses.js";
-import { classify, normalize, MAX_DIST } from "../js/classifier.js";
+import { classify, normalize, MAX_DIST, Smoother } from "../js/classifier.js";
 import { DICTIONARY } from "../js/dictionary.js";
 
 let pass = 0;
@@ -160,6 +160,156 @@ for (const e of DICTIONARY) {
 }
 for (const l of Object.keys(LETTER_POSES)) {
   check(`letter ${l} buildable`, handLandmarks(LETTER_POSES[l]).length === 21);
+}
+
+/* ---- 7. temporal smoothing ---- */
+{
+  // Letters commit after a steady hold...
+  const s = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  let t = 0;
+  const commits = [];
+  // 90 frames ≈ 3s: first commit at 0.7s, repeat at 0.7+1.4s, third would
+  // need 3.5s — so exactly two commits expected.
+  for (let i = 0; i < 90; i++) {
+    t += 33; // ~30 fps
+    const { committed } = s.push("A", t);
+    if (committed) commits.push(committed);
+  }
+  check("smoother commits held letter", commits[0] === "A", `got ${commits[0]}`);
+  check(
+    "smoother repeat needs longer hold",
+    commits.length === 2,
+    `commits in 3s: ${commits.length}`
+  );
+
+  // Flickering candidates must not commit anything.
+  const s2 = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  t = 0;
+  let flickerCommits = 0;
+  const seq = ["A", "B", null, "A", "C", "B", null, "A", "B", "C"];
+  for (let i = 0; i < 60; i++) {
+    t += 33;
+    if (s2.push(seq[i % seq.length], t).committed) flickerCommits++;
+  }
+  check("smoother rejects flicker", flickerCommits === 0, `${flickerCommits} commits`);
+
+  // Losing the hand resets the hold.
+  const s3 = new Smoother({ window: 12, minShare: 0.65, holdMs: 700 });
+  t = 0;
+  let earlyCommit = false;
+  for (let i = 0; i < 15; i++) {
+    t += 33;
+    if (s3.push("A", t).committed) earlyCommit = true;
+  }
+  for (let i = 0; i < 15; i++) {
+    t += 33;
+    if (s3.push(null, t).committed) earlyCommit = true;
+  }
+  check("smoother no commit on short hold + loss", !earlyCommit);
+}
+
+/* ---- 8. lexical sign library ---- */
+{
+  const { SIGNS, MONTH_SPELLINGS, resolveWord, resolvePhrase } = await import(
+    "../js/signs.js"
+  );
+  const { ANCHORS, ARM_REACH, placeHand, composeScene, solveElbow } =
+    await import("../js/body-model.js");
+  const { handshape, HANDSHAPES } = await import("../js/handshapes.js");
+  const { resolveHand } = await import("../js/body-avatar.js");
+
+  // every handshape builds
+  for (const name of Object.keys(HANDSHAPES)) {
+    const lms = handLandmarks(handshape(name));
+    check(`handshape ${name} buildable`, lms.length === 21);
+  }
+
+  // every sign script is structurally valid and physically reachable
+  for (const [word, sign] of Object.entries(SIGNS)) {
+    check(`sign ${word} has frames`, Array.isArray(sign.frames) && sign.frames.length > 0);
+    check(`sign ${word} has description`, typeof sign.description === "string" && sign.description.length > 10);
+    let frameOk = true;
+    let reachOk = true;
+    for (const f of sign.frames) {
+      if (!(f.dur > 0)) frameOk = false;
+      for (const [hand, spec] of [["r", f.rh], ["l", f.lh]]) {
+        if (!spec) { frameOk = false; continue; }
+        let pts;
+        try {
+          pts = resolveHand(hand, spec);
+        } catch {
+          frameOk = false;
+          continue;
+        }
+        // wrist must be within arm's reach of the shoulder (else IK clamps
+        // and the arm visibly distorts)
+        const S = hand === "r" ? ANCHORS.SHOULDER_R : ANCHORS.SHOULDER_L;
+        const d = Math.hypot(pts[0][0] - S[0], pts[0][1] - S[1]);
+        if (d > ARM_REACH + 0.12) reachOk = false;
+      }
+    }
+    check(`sign ${word} frames valid`, frameOk);
+    check(`sign ${word} within arm reach`, reachOk, "wrist beyond arm length");
+  }
+
+  // days + months coverage
+  for (const day of ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]) {
+    check(`day sign ${day}`, !!SIGNS[day]);
+  }
+  check("12 months spellable", Object.keys(MONTH_SPELLINGS).length === 12);
+  check("september is SEPT", MONTH_SPELLINGS.september === "SEPT");
+  check(
+    "month resolves to spelling",
+    resolveWord("january").kind === "spell" && resolveWord("january").text === "JAN"
+  );
+
+  // phrase resolution: multi-word signs match greedily
+  const phrase = resolvePhrase("thank you my friend");
+  check(
+    "phrase: 'thank you' is one sign",
+    phrase[0].kind === "sign" && phrase[0].word === "thank you",
+    JSON.stringify(phrase.map((p) => p.word))
+  );
+  check("phrase: 'my' fingerspelled", phrase[1].kind === "spell");
+  check("phrase: 'friend' is a sign", phrase[2].kind === "sign");
+
+  // letter pseudo-handshapes for on-body fingerspelling
+  const fsPts = resolveHand("r", { shape: "letter:a", at: "FS" });
+  check("letter handshape places", fsPts.length === 21);
+
+  // scene composes for rest + an active two-handed state
+  const rest = composeScene({
+    rhPts: resolveHand("r", "rest"),
+    lhPts: resolveHand("l", "rest"),
+    face: {},
+  });
+  check("rest scene composes", rest.length > 10);
+  const ik = solveElbow(ANCHORS.SHOULDER_R, [-0.3, 0.8], -1);
+  check("IK elbow finite", Number.isFinite(ik.elbow[0]) && Number.isFinite(ik.elbow[1]));
+
+  // dictionary picked up the days/months entries
+  const { DICTIONARY: dict } = await import("../js/dictionary.js");
+  check("dictionary has sunday", dict.some((e) => e.word === "sunday"));
+  check("dictionary has december", dict.some((e) => e.word === "december"));
+
+  // avatar cast: every theme is complete and composes a scene
+  const { AVATARS, DEFAULT_AVATAR } = await import("../js/body-model.js");
+  check("default avatar exists", !!AVATARS[DEFAULT_AVATAR]);
+  const restState = {
+    rhPts: resolveHand("r", "rest"),
+    lhPts: resolveHand("l", "rest"),
+    face: {},
+  };
+  for (const [key, theme] of Object.entries(AVATARS)) {
+    const fields = ["label", "skin", "skinDark", "skinLight", "hair", "hairStyle", "shirt", "shirtDark"];
+    check(`avatar ${key} complete`, fields.every((f) => theme[f]));
+    const prims = composeScene(restState, theme);
+    check(`avatar ${key} composes`, prims.length > 10);
+    check(
+      `avatar ${key} primitives well-formed`,
+      prims.every((p) => ["line", "circle", "ellipse", "arc", "poly"].includes(p.type))
+    );
+  }
 }
 
 /* ---- report ---- */
