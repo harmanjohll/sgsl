@@ -51,6 +51,20 @@ export const HAND_SCALE = 0.3;
 
 /* ---------------- avatar cast ---------------- */
 export const AVATARS = {
+  mei: {
+    label: "Mei",
+    style: "anime",
+    skin: "#f6d7b8", skinDark: "#d9ad85", skinLight: "#fce8d2",
+    hair: "#6b4a3a", hairStyle: "bob",
+    shirt: "#7c6fae", shirtDark: "#645895",
+  },
+  kai: {
+    label: "Kai",
+    style: "anime",
+    skin: "#f0c9a6", skinDark: "#cfa077", skinLight: "#f9ddc2",
+    hair: "#3a3f4a", hairStyle: "shortAnime",
+    shirt: "#4a7fa5", shirtDark: "#3a678a",
+  },
   wei: {
     label: "Wei",
     skin: "#e8b482", skinDark: "#c08a52", skinLight: "#f6caa0",
@@ -78,7 +92,7 @@ export const AVATARS = {
     glasses: true,
   },
 };
-export const DEFAULT_AVATAR = "wei";
+export const DEFAULT_AVATAR = "mei";
 
 /* ---------------- small vector helpers ---------------- */
 const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
@@ -155,7 +169,93 @@ export function placeHand(hand, spec) {
 }
 
 /* ---------------- face ---------------- */
+/** Soft anime-style face: large eyes with highlights, fringe, blush. */
+function animeFacePrimitives(face, T) {
+  const prims = [];
+  const dx = face.headDx || 0;
+  const dy = face.headDy || 0;
+  const hc = [HEAD_C[0] + dx, HEAD_C[1] + dy];
+  const mv = (p) => [p[0] + dx, p[1] + dy];
+  const R = HEAD_R * 1.05;
+
+  // neck + head
+  prims.push({ type: "line", a: mv([0, 0.72]), b: mv([0, 0.45]), w: 0.2, color: T.skinDark });
+  prims.push({ type: "circle", c: hc, r: R, fill: T.skin });
+
+  // hair: smooth cap over the top half...
+  const cap = [];
+  for (let i = 0; i <= 14; i++) {
+    const a = Math.PI * (-0.06 + (1.12 * i) / 14);
+    cap.push([hc[0] + Math.cos(a) * R * 1.1, hc[1] + Math.sin(a) * R * 1.1]);
+  }
+  cap.push([hc[0] - R * 1.02, hc[1] + 0.05], [hc[0] + R * 1.02, hc[1] + 0.05]);
+  prims.push({ type: "poly", pts: cap, fill: T.hair });
+  // ...with three soft fringe bumps above the brows
+  for (const fx of [-0.16, 0, 0.16]) {
+    prims.push({ type: "circle", c: mv([fx, HEAD_C[1] + 0.27]), r: 0.085, fill: T.hair });
+  }
+  if (T.hairStyle === "bob") {
+    // side locks framing the face
+    for (const side of [-1, 1]) {
+      prims.push({
+        type: "line",
+        a: mv([side * R * 0.98, HEAD_C[1] + 0.08]),
+        b: mv([side * R * 0.94, HEAD_C[1] - 0.4]),
+        w: 0.15,
+        color: T.hair,
+        cap: "round",
+      });
+    }
+  }
+
+  // brows
+  const brows = face.brows || "neutral";
+  const browLift = brows === "up" ? 0.05 : brows === "furrow" ? -0.035 : 0;
+  const browTilt = brows === "furrow" ? 0.045 : 0;
+  for (const side of [-1, 1]) {
+    const bx = hc[0] + side * 0.16;
+    const by = hc[1] + 0.175 + browLift;
+    prims.push({
+      type: "line",
+      a: [bx - side * 0.075, by + (brows === "up" ? 0.015 : 0)],
+      b: [bx + side * 0.075, by - browTilt],
+      w: 0.024,
+      color: T.hair,
+    });
+  }
+
+  // large eyes with highlights
+  for (const side of [-1, 1]) {
+    const ex = hc[0] + side * 0.16;
+    const ey = hc[1] + 0.04;
+    prims.push({ type: "ellipse", c: [ex, ey], rx: 0.062, ry: 0.1, fill: "#33303b" });
+    prims.push({ type: "circle", c: [ex - 0.018, ey + 0.035], r: 0.022, fill: "#ffffff" });
+  }
+
+  // blush
+  for (const side of [-1, 1]) {
+    prims.push({ type: "ellipse", c: mv([side * 0.26, HEAD_C[1] - 0.1]), rx: 0.055, ry: 0.028, fill: "#f4b8a4" });
+  }
+
+  // mouth (small, expressive)
+  const mouth = face.mouth || "neutral";
+  const my = hc[1] - 0.2;
+  if (mouth === "smile") {
+    prims.push({ type: "arc", c: [hc[0], my + 0.04], r: 0.09, a0: Math.PI * 1.15, a1: Math.PI * 1.85, w: 0.026, color: "#b06a5a" });
+  } else if (mouth === "open") {
+    prims.push({ type: "ellipse", c: [hc[0], my], rx: 0.04, ry: 0.05, fill: "#b06a5a" });
+  } else if (mouth === "frown") {
+    prims.push({ type: "arc", c: [hc[0], my - 0.1], r: 0.09, a0: Math.PI * 0.18, a1: Math.PI * 0.82, w: 0.026, color: "#b06a5a" });
+  } else if (mouth === "pressed") {
+    prims.push({ type: "line", a: [hc[0] - 0.06, my], b: [hc[0] + 0.06, my], w: 0.028, color: "#b06a5a" });
+  } else {
+    prims.push({ type: "line", a: [hc[0] - 0.045, my], b: [hc[0] + 0.045, my], w: 0.022, color: "#b06a5a" });
+  }
+  return prims;
+}
+
 function facePrimitives(face = {}, T) {
+  if (T.style === "anime") return animeFacePrimitives(face, T);
   const prims = [];
   const dx = face.headDx || 0; // headshake offset
   const dy = face.headDy || 0; // nod offset

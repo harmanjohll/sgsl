@@ -40,6 +40,10 @@ def paint(draw, prims, ox, oy):
             c = project(pr["c"], ox, oy)
             r = pr["r"] * s
             draw.ellipse([c[0] - r, c[1] - r, c[0] + r, c[1] + r], fill=pr["fill"])
+        elif t == "ellipse":
+            c = project(pr["c"], ox, oy)
+            rx, ry = pr["rx"] * s, pr["ry"] * s
+            draw.ellipse([c[0] - rx, c[1] - ry, c[0] + rx, c[1] + ry], fill=pr["fill"])
         elif t == "arc":
             c = project(pr["c"], ox, oy)
             r = pr["r"] * s
