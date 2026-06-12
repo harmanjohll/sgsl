@@ -291,6 +291,25 @@ for (const l of Object.keys(LETTER_POSES)) {
   const { DICTIONARY: dict } = await import("../js/dictionary.js");
   check("dictionary has sunday", dict.some((e) => e.word === "sunday"));
   check("dictionary has december", dict.some((e) => e.word === "december"));
+
+  // avatar cast: every theme is complete and composes a scene
+  const { AVATARS, DEFAULT_AVATAR } = await import("../js/body-model.js");
+  check("default avatar exists", !!AVATARS[DEFAULT_AVATAR]);
+  const restState = {
+    rhPts: resolveHand("r", "rest"),
+    lhPts: resolveHand("l", "rest"),
+    face: {},
+  };
+  for (const [key, theme] of Object.entries(AVATARS)) {
+    const fields = ["label", "skin", "skinDark", "skinLight", "hair", "hairStyle", "shirt", "shirtDark"];
+    check(`avatar ${key} complete`, fields.every((f) => theme[f]));
+    const prims = composeScene(restState, theme);
+    check(`avatar ${key} composes`, prims.length > 10);
+    check(
+      `avatar ${key} primitives well-formed`,
+      prims.every((p) => ["line", "circle", "arc", "poly"].includes(p.type))
+    );
+  }
 }
 
 /* ---- report ---- */
