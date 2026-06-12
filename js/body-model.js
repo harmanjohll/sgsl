@@ -49,12 +49,36 @@ export const ARM_REACH = UPPER_ARM + FOREARM;
 /** Hand render scale: hand-model units → body units. */
 export const HAND_SCALE = 0.3;
 
-const SKIN = "#e0ac69";
-const SKIN_DARK = "#b07b45";
-const SKIN_LIGHT = "#f1c27d";
-const SHIRT = "#3b4a6b";
-const SHIRT_DARK = "#2e3a55";
-const HAIR = "#2b2118";
+/* ---------------- avatar cast ---------------- */
+export const AVATARS = {
+  wei: {
+    label: "Wei",
+    skin: "#e8b482", skinDark: "#c08a52", skinLight: "#f6caa0",
+    hair: "#1d1a17", hairStyle: "short",
+    shirt: "#3b4a6b", shirtDark: "#2e3a55",
+  },
+  priya: {
+    label: "Priya",
+    skin: "#bf7e4e", skinDark: "#965a30", skinLight: "#d89c6e",
+    hair: "#241b14", hairStyle: "long",
+    shirt: "#6b3b5e", shirtDark: "#54304b",
+    earrings: true,
+  },
+  aisyah: {
+    label: "Aisyah",
+    skin: "#d9a06b", skinDark: "#b07b45", skinLight: "#edc08e",
+    hair: "#3f7d72", hairStyle: "hijab", // hijab colour
+    shirt: "#2f5d54", shirtDark: "#264a44",
+  },
+  marcus: {
+    label: "Marcus",
+    skin: "#8d5a3b", skinDark: "#6e4226", skinLight: "#a9744e",
+    hair: "#15100c", hairStyle: "curly",
+    shirt: "#46603a", shirtDark: "#37502c",
+    glasses: true,
+  },
+};
+export const DEFAULT_AVATAR = "wei";
 
 /* ---------------- small vector helpers ---------------- */
 const add = (a, b) => [a[0] + b[0], a[1] + b[1]];
@@ -131,18 +155,59 @@ export function placeHand(hand, spec) {
 }
 
 /* ---------------- face ---------------- */
-function facePrimitives(face = {}) {
+function facePrimitives(face = {}, T) {
   const prims = [];
   const dx = face.headDx || 0; // headshake offset
   const dy = face.headDy || 0; // nod offset
   const hc = [HEAD_C[0] + dx, HEAD_C[1] + dy];
   const mv = (p) => [p[0] + dx, p[1] + dy];
 
-  // neck + head + hair
-  prims.push({ type: "line", a: mv([0, 0.72]), b: mv([0, 0.45]), w: 0.22, color: SKIN_DARK });
-  prims.push({ type: "circle", c: hc, r: HEAD_R, fill: SKIN });
-  // angles are in math convention (y-up, CCW): 0.05π..0.95π = top of head
-  prims.push({ type: "arc", c: hc, r: HEAD_R * 1.02, a0: Math.PI * 0.05, a1: Math.PI * 0.95, w: 0.16, color: HAIR });
+  // neck
+  prims.push({ type: "line", a: mv([0, 0.72]), b: mv([0, 0.45]), w: 0.22, color: T.skinDark });
+
+  // hair behind the head (hijab wraps wider, long hair drapes to shoulders)
+  if (T.hairStyle === "hijab") {
+    prims.push({ type: "circle", c: hc, r: HEAD_R * 1.18, fill: T.hair });
+    prims.push({
+      type: "poly",
+      pts: [mv([-0.42, 1.05]), mv([0.42, 1.05]), mv([0.3, 0.42]), mv([-0.3, 0.42])],
+      fill: T.hair,
+    });
+  } else if (T.hairStyle === "long") {
+    for (const side of [-1, 1]) {
+      prims.push({
+        type: "line",
+        a: mv([side * 0.34, 1.32]),
+        b: mv([side * 0.44, 0.5]),
+        w: 0.16,
+        color: T.hair,
+        cap: "round",
+      });
+    }
+  }
+
+  prims.push({ type: "circle", c: hc, r: HEAD_R, fill: T.skin });
+
+  // hair on top (angles in math convention: 0.05π..0.95π = top of head)
+  if (T.hairStyle === "curly") {
+    for (let i = 0; i <= 6; i++) {
+      const a = Math.PI * (0.1 + (0.8 * i) / 6);
+      prims.push({
+        type: "circle",
+        c: [hc[0] + Math.cos(a) * HEAD_R * 0.95, hc[1] + Math.sin(a) * HEAD_R * 0.95],
+        r: 0.11,
+        fill: T.hair,
+      });
+    }
+  } else {
+    prims.push({ type: "arc", c: hc, r: HEAD_R * 1.02, a0: Math.PI * 0.05, a1: Math.PI * 0.95, w: 0.16, color: T.hair });
+  }
+
+  if (T.earrings) {
+    for (const side of [-1, 1]) {
+      prims.push({ type: "circle", c: mv([side * 0.44, 0.98]), r: 0.035, fill: "#e8c547" });
+    }
+  }
 
   const brows = face.brows || "neutral";
   const browLift = brows === "up" ? 0.06 : brows === "furrow" ? -0.04 : 0;
@@ -155,13 +220,19 @@ function facePrimitives(face = {}) {
       a: [bx - side * 0.1, by + (brows === "up" ? 0.02 : 0)],
       b: [bx + side * 0.1, by - browTilt],
       w: 0.035,
-      color: HAIR,
+      color: "#2a2420",
     });
     // eyes
     prims.push({ type: "circle", c: [hc[0] + side * 0.16, hc[1] + 0.07], r: 0.038, fill: "#222" });
+    if (T.glasses) {
+      prims.push({ type: "arc", c: [hc[0] + side * 0.16, hc[1] + 0.07], r: 0.1, a0: 0, a1: Math.PI * 2, w: 0.022, color: "#1c2733" });
+    }
+  }
+  if (T.glasses) {
+    prims.push({ type: "line", a: [hc[0] - 0.06, hc[1] + 0.09], b: [hc[0] + 0.06, hc[1] + 0.09], w: 0.022, color: "#1c2733" });
   }
   // nose
-  prims.push({ type: "line", a: [hc[0], hc[1] + 0.02], b: [hc[0] - 0.03, hc[1] - 0.1], w: 0.025, color: SKIN_DARK });
+  prims.push({ type: "line", a: [hc[0], hc[1] + 0.02], b: [hc[0] - 0.03, hc[1] - 0.1], w: 0.025, color: T.skinDark });
 
   const mouth = face.mouth || "neutral";
   const my = hc[1] - 0.22;
@@ -189,10 +260,10 @@ const FINGER_CHAINS = [
 ];
 const PALM_OUTLINE = [0, 1, 5, 9, 13, 17];
 
-function handPrimitives(pts) {
+function handPrimitives(pts, T) {
   const prims = [];
   const palmPts = PALM_OUTLINE.map((i) => [pts[i][0], pts[i][1]]);
-  prims.push({ type: "poly", pts: palmPts, fill: SKIN, stroke: SKIN, w: HAND_SCALE * 0.3 });
+  prims.push({ type: "poly", pts: palmPts, fill: T.skin, stroke: T.skin, w: HAND_SCALE * 0.3 });
   const chains = [...FINGER_CHAINS].sort(
     (a, b) => pts[a[a.length - 1]][2] - pts[b[b.length - 1]][2]
   );
@@ -204,7 +275,7 @@ function handPrimitives(pts) {
         a: [pts[chain[i]][0], pts[chain[i]][1]],
         b: [pts[chain[i + 1]][0], pts[chain[i + 1]][1]],
         w: HAND_SCALE * (0.155 + 0.04 * depth),
-        color: depth > 0.55 ? SKIN_LIGHT : depth < 0.3 ? SKIN_DARK : SKIN,
+        color: depth > 0.55 ? T.skinLight : depth < 0.3 ? T.skinDark : T.skin,
         cap: "round",
       });
     }
@@ -218,7 +289,8 @@ function handPrimitives(pts) {
  * landmark points in body space (see placeHand). The animator tweens the
  * points; this function only composes primitives, back to front.
  */
-export function composeScene(state) {
+export function composeScene(state, theme = AVATARS[DEFAULT_AVATAR]) {
+  const T = theme;
   const prims = [];
 
   // torso
@@ -227,14 +299,14 @@ export function composeScene(state) {
     pts: [
       [-0.72, 0.5], [0.72, 0.5], [0.62, -0.9], [-0.62, -0.9],
     ],
-    fill: SHIRT,
-    stroke: SHIRT_DARK,
+    fill: T.shirt,
+    stroke: T.shirtDark,
     w: 0.04,
   });
   // shoulders cap
-  prims.push({ type: "line", a: [-0.6, 0.46], b: [0.6, 0.46], w: 0.3, color: SHIRT });
+  prims.push({ type: "line", a: [-0.6, 0.46], b: [0.6, 0.46], w: 0.3, color: T.shirt });
 
-  prims.push(...facePrimitives(state.face));
+  prims.push(...facePrimitives(state.face, T));
 
   // arms + hands: non-dominant first, dominant (signer's right) on top
   for (const hand of ["l", "r"]) {
@@ -246,9 +318,9 @@ export function composeScene(state) {
       [pts[0][0], pts[0][1]],
       hand === "r" ? -1 : 1
     );
-    prims.push({ type: "line", a: S, b: elbow, w: 0.2, color: SHIRT, cap: "round" });
-    prims.push({ type: "line", a: elbow, b: wrist, w: 0.17, color: SHIRT_DARK, cap: "round" });
-    prims.push(...handPrimitives(pts));
+    prims.push({ type: "line", a: S, b: elbow, w: 0.2, color: T.shirt, cap: "round" });
+    prims.push({ type: "line", a: elbow, b: wrist, w: 0.17, color: T.shirtDark, cap: "round" });
+    prims.push(...handPrimitives(pts, T));
   }
   return prims;
 }

@@ -7,7 +7,7 @@
  * without a lexical sign.
  */
 
-import { composeScene, placeHand, ANCHORS } from "./body-model.js";
+import { composeScene, placeHand, ANCHORS, AVATARS, DEFAULT_AVATAR } from "./body-model.js";
 import { resolvePhrase } from "./signs.js";
 import { poseFor } from "./poses.js";
 
@@ -51,9 +51,10 @@ function lerpFace(a = {}, b = {}, t) {
 }
 
 export class BodyAvatar {
-  constructor(canvas) {
+  constructor(canvas, avatarKey = DEFAULT_AVATAR) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
+    this.avatarKey = AVATARS[avatarKey] ? avatarKey : DEFAULT_AVATAR;
     this.caption = "";
     this.speed = 1;
     this.onItem = null; // callback(label, kind) per word/letter
@@ -78,6 +79,12 @@ export class BodyAvatar {
     this._timer = null;
     this._queue = [];
     this.playing = false;
+  }
+
+  setAvatar(key) {
+    if (!AVATARS[key]) return;
+    this.avatarKey = key;
+    this._paint();
   }
 
   rest() {
@@ -192,11 +199,14 @@ export class BodyAvatar {
   }
 
   _paint() {
-    const prims = composeScene({
-      rhPts: this._cur.rh,
-      lhPts: this._cur.lh,
-      face: this._cur.face,
-    });
+    const prims = composeScene(
+      {
+        rhPts: this._cur.rh,
+        lhPts: this._cur.lh,
+        face: this._cur.face,
+      },
+      AVATARS[this.avatarKey]
+    );
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;

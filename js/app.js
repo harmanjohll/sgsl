@@ -31,8 +31,27 @@ tabs.forEach((tab) =>
 );
 
 /* ---------------- lookup mode ---------------- */
-const avatar = new BodyAvatar($("avatar-canvas"));
+import { AVATARS } from "./body-model.js";
+
+const savedAvatar = localStorage.getItem("sgsl-avatar") || "wei";
+const avatar = new BodyAvatar($("avatar-canvas"), savedAvatar);
 let lastSpelled = "";
+
+// avatar picker
+const picker = $("avatar-picker");
+for (const [key, a] of Object.entries(AVATARS)) {
+  const chip = document.createElement("button");
+  chip.className = "chip" + (key === avatar.avatarKey ? " selected-chip" : "");
+  chip.textContent = a.label;
+  chip.addEventListener("click", () => {
+    avatar.setAvatar(key);
+    localStorage.setItem("sgsl-avatar", key);
+    picker
+      .querySelectorAll(".chip")
+      .forEach((c) => c.classList.toggle("selected-chip", c === chip));
+  });
+  picker.appendChild(chip);
+}
 
 avatar.onItem = (label, kind) => {
   const trail = $("spelled-so-far");
