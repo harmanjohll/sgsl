@@ -94,22 +94,25 @@ export const MAX_DIST = 0.55;
 /**
  * Temporal smoothing: a letter is "stable" once it has dominated the recent
  * window; it is "committed" (emitted) after being held for `holdMs`.
+ * Keeping the same letter held commits it again after `holdMs * repeatFactor`,
+ * so double letters ("LL" in HELLO) can be spelled without dropping the hand.
  */
 export class Smoother {
-  constructor({ window = 12, minShare = 0.65, holdMs = 700 } = {}) {
+  constructor({ window = 12, minShare = 0.65, holdMs = 700, repeatFactor = 2 } = {}) {
     this.window = window;
     this.minShare = minShare;
     this.holdMs = holdMs;
+    this.repeatFactor = repeatFactor;
     this.frames = [];
     this.stable = null;
     this.stableSince = 0;
-    this.lastCommitted = null;
+    this.commitCount = 0;
   }
 
   reset() {
     this.frames = [];
     this.stable = null;
-    this.lastCommitted = null;
+    this.commitCount = 0;
   }
 
   /**
@@ -139,17 +142,19 @@ export class Smoother {
     if (newStable !== this.stable) {
       this.stable = newStable;
       this.stableSince = now;
-      // Allow the same letter to be committed again after it drops out.
-      if (newStable === null) this.lastCommitted = null;
+      this.commitCount = 0;
     }
 
     let committed = null;
     let progress = 0;
     if (this.stable) {
-      progress = Math.min(1, (now - this.stableSince) / this.holdMs);
-      if (progress >= 1 && this.stable !== this.lastCommitted) {
+      const need =
+        this.commitCount === 0 ? this.holdMs : this.holdMs * this.repeatFactor;
+      progress = Math.min(1, (now - this.stableSince) / need);
+      if (progress >= 1) {
         committed = this.stable;
-        this.lastCommitted = this.stable;
+        this.commitCount++;
+        this.stableSince = now; // restart the hold for a possible repeat
       }
     }
     return { stable: this.stable, progress, committed };
