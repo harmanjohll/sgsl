@@ -1,11 +1,16 @@
 # SgSL Studio
 
-A browser-based Singapore Sign Language (SgSL) fingerspelling app. It can:
+A browser-based Singapore Sign Language (SgSL) app. It can:
 
-1. **Show you a sign** — type any word or phrase and an animated hand avatar
-   fingerspells it letter by letter (A–Z and digits, including the motion
-   traces for J and Z). Words in the built-in dictionary also show a
-   description of the full SgSL sign.
+1. **Show you a sign** — type any word or phrase and an upper-body signing
+   avatar (two hands, arms, head and facial expressions) performs it.
+   ~50 everyday words have scripted **lexical signs** with facial grammar
+   baked in (furrowed brows on wh-questions, headshake on negation, nodding
+   on YES), including all days of the week (letter-handshape circles;
+   SUNDAY uses both hands). Months are fingerspelled as standard
+   abbreviations (JAN, FEB, SEPT…), which is how signers actually do it.
+   Anything else is fingerspelled letter by letter on the raised hand
+   (A–Z and digits, including the motion traces for J and Z).
 2. **Read your signs** — point your webcam at your hand and the app
    recognises the fingerspelling handshape you are holding, builds up the
    spelled text, and suggests matching dictionary words as you go.
@@ -64,14 +69,19 @@ fully testable offline.
 |---|---|
 | `index.html`, `css/style.css` | UI shell (4 tabs) |
 | `js/hand-model.js` | parametric hand → 21 landmarks (forward kinematics) |
-| `js/poses.js` | SgSL pose library: A–Z, 0–9, rest pose, motion metadata |
+| `js/poses.js` | fingerspelling pose library: A–Z, 0–9, rest pose, motion metadata |
+| `js/handshapes.js` | extended handshape inventory for lexical signs (flat, open-5, flat-O, claw…) |
+| `js/body-model.js` | upper-body avatar: anchors (chin, temple, chest…), 2-bone arm IK, face, scene composer |
+| `js/signs.js` | lexical sign library (~50 signs as keyframe scripts with facial grammar) + month spelling rules + phrase resolver |
+| `js/body-avatar.js` | signing-avatar animator/painter (sign playback + on-body fingerspelling) |
 | `js/classifier.js` | normalisation, template matching, temporal smoothing |
-| `js/avatar.js` | canvas hand renderer + fingerspelling animator (incl. J/Z traces) |
+| `js/avatar.js` | close-up hand renderer used by Practice and Alphabet tabs |
 | `js/tracker.js` | webcam + MediaPipe Hand Landmarker wrapper |
-| `js/dictionary.js` | built-in SgSL vocabulary with sign descriptions |
+| `js/dictionary.js` | built-in SgSL vocabulary with sign descriptions (incl. days + months) |
 | `js/app.js` | application glue for the four modes |
-| `test/test.mjs` | offline verification suite (`node test/test.mjs`) |
-| `test/render_preview.py` | renders `test/preview.png` contact sheet of all poses |
+| `test/test.mjs` | offline verification suite (`node test/test.mjs`, 700+ checks) |
+| `test/render_preview.py` | contact sheet of all fingerspelling handshapes |
+| `test/dump_signs.mjs` + `test/render_signs.py` | contact sheet of avatar sign keyframes (`test/signs_preview.png`) |
 
 ## Verification
 
@@ -100,15 +110,19 @@ beyond fingerspelling — learn from the community:
 - [NTU SgSL Sign Bank](https://blogs.ntu.edu.sg/sgslsignbank/)
 - [deaf.sg — SgSL lessons](https://www.deaf.sg/)
 
-## Known limitations (v1)
+## Known limitations (v2)
 
+- Avatar sign animations are **simplified 2.5D schematics** of signs SgSL
+  shares with ASL/SEE usage — they teach the shape of a sign, but learners
+  should verify against community video (SgSL Sign Bank / SADeaf), since
+  SgSL has local variants.
 - **J and Z** involve motion; the avatar demonstrates them, but live
-  recognition only handles the 24 static letters.
+  recognition only handles the 24 static letters, and recognition overall
+  covers fingerspelling, not lexical signs (that needs sequence matching —
+  see roadmap).
 - Letters that differ mainly by hidden thumb position (M/N/T/S/E) are hard
   to tell apart from a single camera at some angles — face the camera
   palm-on for best results.
-- Dictionary signs are shown as text descriptions plus fingerspelling; the
-  stick-hand avatar cannot yet perform full two-handed signs.
 
 ## Roadmap
 
