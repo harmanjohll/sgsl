@@ -307,7 +307,7 @@ for (const l of Object.keys(LETTER_POSES)) {
     check(`avatar ${key} composes`, prims.length > 10);
     check(
       `avatar ${key} primitives well-formed`,
-      prims.every((p) => ["line", "circle", "arc", "poly"].includes(p.type))
+      prims.every((p) => ["line", "circle", "ellipse", "arc", "poly"].includes(p.type))
     );
   }
 }

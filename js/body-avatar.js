@@ -230,6 +230,12 @@ export class BodyAvatar {
         ctx.beginPath();
         ctx.arc(c[0], c[1], pr.r * S, 0, Math.PI * 2);
         ctx.fill();
+      } else if (pr.type === "ellipse") {
+        const c = this._project(pr.c);
+        ctx.fillStyle = pr.fill;
+        ctx.beginPath();
+        ctx.ellipse(c[0], c[1], pr.rx * S, pr.ry * S, 0, 0, Math.PI * 2);
+        ctx.fill();
       } else if (pr.type === "arc") {
         const c = this._project(pr.c);
         ctx.strokeStyle = pr.color;

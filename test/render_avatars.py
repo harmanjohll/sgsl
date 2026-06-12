@@ -21,7 +21,7 @@ def main():
         sys.exit(res.stderr)
     scenes = json.loads(res.stdout)
 
-    cols = 4
+    cols = 6
     rows = (len(scenes) + cols - 1) // cols
     img = Image.new("RGB", (cols * CELL_W, rows * CELL_H), BG)
     draw = ImageDraw.Draw(img)
