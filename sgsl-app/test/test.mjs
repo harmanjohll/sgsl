@@ -208,6 +208,91 @@ for (const l of Object.keys(LETTER_POSES)) {
   check("smoother no commit on short hold + loss", !earlyCommit);
 }
 
+/* ---- 8. lexical sign library ---- */
+{
+  const { SIGNS, MONTH_SPELLINGS, resolveWord, resolvePhrase } = await import(
+    "../js/signs.js"
+  );
+  const { ANCHORS, ARM_REACH, placeHand, composeScene, solveElbow } =
+    await import("../js/body-model.js");
+  const { handshape, HANDSHAPES } = await import("../js/handshapes.js");
+  const { resolveHand } = await import("../js/body-avatar.js");
+
+  // every handshape builds
+  for (const name of Object.keys(HANDSHAPES)) {
+    const lms = handLandmarks(handshape(name));
+    check(`handshape ${name} buildable`, lms.length === 21);
+  }
+
+  // every sign script is structurally valid and physically reachable
+  for (const [word, sign] of Object.entries(SIGNS)) {
+    check(`sign ${word} has frames`, Array.isArray(sign.frames) && sign.frames.length > 0);
+    check(`sign ${word} has description`, typeof sign.description === "string" && sign.description.length > 10);
+    let frameOk = true;
+    let reachOk = true;
+    for (const f of sign.frames) {
+      if (!(f.dur > 0)) frameOk = false;
+      for (const [hand, spec] of [["r", f.rh], ["l", f.lh]]) {
+        if (!spec) { frameOk = false; continue; }
+        let pts;
+        try {
+          pts = resolveHand(hand, spec);
+        } catch {
+          frameOk = false;
+          continue;
+        }
+        // wrist must be within arm's reach of the shoulder (else IK clamps
+        // and the arm visibly distorts)
+        const S = hand === "r" ? ANCHORS.SHOULDER_R : ANCHORS.SHOULDER_L;
+        const d = Math.hypot(pts[0][0] - S[0], pts[0][1] - S[1]);
+        if (d > ARM_REACH + 0.12) reachOk = false;
+      }
+    }
+    check(`sign ${word} frames valid`, frameOk);
+    check(`sign ${word} within arm reach`, reachOk, "wrist beyond arm length");
+  }
+
+  // days + months coverage
+  for (const day of ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]) {
+    check(`day sign ${day}`, !!SIGNS[day]);
+  }
+  check("12 months spellable", Object.keys(MONTH_SPELLINGS).length === 12);
+  check("september is SEPT", MONTH_SPELLINGS.september === "SEPT");
+  check(
+    "month resolves to spelling",
+    resolveWord("january").kind === "spell" && resolveWord("january").text === "JAN"
+  );
+
+  // phrase resolution: multi-word signs match greedily
+  const phrase = resolvePhrase("thank you my friend");
+  check(
+    "phrase: 'thank you' is one sign",
+    phrase[0].kind === "sign" && phrase[0].word === "thank you",
+    JSON.stringify(phrase.map((p) => p.word))
+  );
+  check("phrase: 'my' fingerspelled", phrase[1].kind === "spell");
+  check("phrase: 'friend' is a sign", phrase[2].kind === "sign");
+
+  // letter pseudo-handshapes for on-body fingerspelling
+  const fsPts = resolveHand("r", { shape: "letter:a", at: "FS" });
+  check("letter handshape places", fsPts.length === 21);
+
+  // scene composes for rest + an active two-handed state
+  const rest = composeScene({
+    rhPts: resolveHand("r", "rest"),
+    lhPts: resolveHand("l", "rest"),
+    face: {},
+  });
+  check("rest scene composes", rest.length > 10);
+  const ik = solveElbow(ANCHORS.SHOULDER_R, [-0.3, 0.8], -1);
+  check("IK elbow finite", Number.isFinite(ik.elbow[0]) && Number.isFinite(ik.elbow[1]));
+
+  // dictionary picked up the days/months entries
+  const { DICTIONARY: dict } = await import("../js/dictionary.js");
+  check("dictionary has sunday", dict.some((e) => e.word === "sunday"));
+  check("dictionary has december", dict.some((e) => e.word === "december"));
+}
+
 /* ---- report ---- */
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log(`closest template pair: ${minPairName} (d=${minPair.toFixed(4)})`);
