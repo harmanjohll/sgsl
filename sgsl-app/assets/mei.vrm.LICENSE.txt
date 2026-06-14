@@ -1,21 +1,7 @@
-Mei avatar model — license & provenance
-========================================
-
-File:    mei.vrm
-Format:  VRM 0.x (loads under @pixiv/three-vrm 0.6.7 / THREE.VRM.from)
-Model:   "Vita" — a VRoid Studio sample model (anime girl)
-Source:  https://github.com/madjin/vrm-samples  (vroid/beta/Vita.vrm)
-Origin:  VRoid Project / pixiv sample model set
-
-License: CC0 1.0 Universal (Public Domain Dedication)
-         https://creativecommons.org/publicdomain/zero/1.0/
-         (declared in the model's embedded VRM meta: licenseName = "CC0")
-         Free to use, modify, redistribute, and use commercially. No credit
-         required.
-
-Rig:     VRM 0.x · full humanoid incl. 30 finger bones · blendshape presets
-         a/i/u/e/o + blink — exactly what js/retarget.js drives.
-
-This is a stand-in "Mei". To change the look, replace this file with any
-other VRM **0.x** model that has humanoid finger bones and the a/i/u/e/o +
-blink blendshape presets — no code change required.
+Avatar: "Mei" hero model
+File: mei.vrm
+Source model: "Sendagaya Shino" — pixiv VRoid sample (vrm-samples)
+Format: VRM 0.x
+License: CC0 (public domain) — per VRM metadata licenseName: CC0
+Usage: free for commercial and non-commercial use, redistribution allowed.
+Swappable: drop in any VRM 0.x model with humanoid finger bones + blendshapes.
