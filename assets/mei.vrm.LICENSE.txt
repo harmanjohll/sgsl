@@ -1,6 +1,6 @@
 Avatar: "Mei" hero model
 File: mei.vrm
-Source model: "Sendagaya Shino" — pixiv VRoid sample (vrm-samples)
+Source model: "Sakurada Fumiriya" — pixiv VRoid sample (vrm-samples)
 Format: VRM 0.x
 License: CC0 (public domain) — per VRM metadata licenseName: CC0
 Usage: free for commercial and non-commercial use, redistribution allowed.
