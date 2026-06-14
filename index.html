@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SgSL — Mei signs Singapore Sign Language</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Pinned library versions — exact builds the Kalidokit retarget is tuned to.
+       MediaPipe Holistic 0.5.x is a deprecated legacy solution; it is pinned to an
+       exact CDN build on purpose so it can't change under us. (Modernising to the
+       Tasks-Vision HolisticLandmarker is a separate, later hardening task.) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@0.6.7/lib/three-vrm.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/holistic.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <script type="importmap">
+  { "imports": { "kalidokit": "https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.es.js" } }
+  </script>
+</head>
+<body>
+  <header class="header">
+    <h1>SgSL · Mei</h1>
+    <nav class="tabs">
+      <button class="tab active" data-tab="signit">Sign It</button>
+      <button class="tab" data-tab="record">Record</button>
+      <button class="tab" data-tab="library">Library</button>
+    </nav>
+  </header>
+
+  <!-- ─── Sign It: text -> sign ─────────────────────────────── -->
+  <main id="tab-signit" class="main tab-content active">
+    <section class="record-panel">
+      <h2 class="sidebar-title">Type — Mei signs it</h2>
+      <div class="rec-label-row">
+        <input type="text" id="signit-input" class="rec-input" placeholder="e.g. thank you, hello, one">
+        <button id="btn-signit-play" class="btn btn-record">Sign</button>
+      </div>
+      <div id="signit-chips" class="chips"></div>
+      <p class="hint">Green = in the library and signable. Grey = not recorded yet (skipped). Vocabulary grows as you record signs.</p>
+      <div id="signit-status" class="status status-info">Type a word or phrase and press Sign.</div>
+    </section>
+    <section class="viewer">
+      <div id="signit-viewport" class="viewport"></div>
+      <div class="controls">
+        <div class="control-row">
+          <button id="btn-signit-replay" class="btn">Replay</button>
+          <button id="btn-signit-stop" class="btn">Stop</button>
+          <label class="speed-control">Speed:
+            <input type="range" id="signit-speed" min="0.2" max="3" step="0.1" value="1">
+            <span id="signit-speed-label">1.0x</span>
+          </label>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ─── Record: webcam -> sign ────────────────────────────── -->
+  <main id="tab-record" class="main tab-content">
+    <section class="record-panel">
+      <h2 class="sidebar-title">Camera</h2>
+      <div class="camera-container">
+        <video id="rec-video" class="rec-video" playsinline></video>
+        <canvas id="rec-overlay" class="rec-overlay"></canvas>
+        <div id="rec-camera-status" class="camera-status">Camera loading...</div>
+        <div id="rec-framing" class="framing-badge bad">Framing: 0%</div>
+      </div>
+      <div class="rec-controls">
+        <div class="rec-label-row">
+          <label for="rec-label">Sign label:</label>
+          <input type="text" id="rec-label" class="rec-input" placeholder="e.g. hello, thank_you">
+        </div>
+        <div class="rec-btn-row">
+          <button id="btn-calibrate" class="btn" disabled>Calibrate (arms at sides)</button>
+          <button id="btn-rec-start" class="btn btn-record" disabled>Record</button>
+          <button id="btn-rec-stop" class="btn" disabled>Stop</button>
+        </div>
+        <div id="rec-timer" class="rec-timer"></div>
+        <label class="speed-control">Margin of error (tolerance):
+          <input type="range" id="tolerance-slider" min="2" max="20" step="1" value="8">
+          <span id="tolerance-label">8%</span>
+        </label>
+      </div>
+      <div id="quality-panel" class="quality-panel hidden">
+        <h3 class="quality-title">Quality Check</h3>
+        <div id="quality-scores" class="quality-scores"></div>
+        <div id="quality-overall" class="quality-overall"></div>
+        <h3 class="quality-title">Replay Fidelity</h3>
+        <div id="fidelity-readout" class="quality-overall"></div>
+        <div class="rec-btn-row">
+          <button id="btn-rec-preview" class="btn">Preview on Avatar</button>
+          <button id="btn-rec-save" class="btn btn-save" disabled>Save to device</button>
+          <button id="btn-rec-export" class="btn">Export JSON</button>
+          <button id="btn-rec-discard" class="btn btn-discard">Discard</button>
+        </div>
+      </div>
+      <div class="rec-label-row">
+        <label for="rec-import">Import sign file:</label>
+        <input type="file" id="rec-import" accept="application/json,.json">
+      </div>
+      <div id="rec-status" class="status status-info">Enter a sign label and click Record.</div>
+    </section>
+    <section class="viewer">
+      <div id="rec-avatar-viewport" class="viewport"></div>
+      <div id="rec-avatar-status" class="status status-info">Avatar will mirror your signing in real-time.</div>
+      <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+    </section>
+  </main>
+
+  <!-- ─── Library: browse + play ────────────────────────────── -->
+  <main id="tab-library" class="main tab-content">
+    <aside class="sidebar">
+      <h2 class="sidebar-title">Sign Library</h2>
+      <div id="lib-sign-list" class="sign-list"><p class="hint">Open this tab to load signs…</p></div>
+    </aside>
+    <section class="viewer">
+      <div id="lib-viewport" class="viewport"></div>
+      <div class="controls">
+        <div class="progress-bar"><div id="lib-progress-fill" class="progress-fill"></div></div>
+        <div class="control-row">
+          <button id="btn-lib-replay" class="btn">Replay</button>
+          <button id="btn-lib-pause" class="btn">Pause</button>
+          <button id="btn-lib-stop" class="btn">Stop</button>
+          <span id="lib-frame-info" class="frame-info">0 / 0</span>
+          <label class="speed-control">Speed:
+            <input type="range" id="lib-speed" min="0.2" max="3" step="0.1" value="1">
+            <span id="lib-speed-label">1.0x</span>
+          </label>
+        </div>
+      </div>
+      <div id="lib-status" class="status status-info">Initializing…</div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

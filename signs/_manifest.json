@@ -1,0 +1,50 @@
+[
+  {
+    "label": "b",
+    "frames": 34,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "c",
+    "frames": 72,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "d",
+    "frames": 76,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "five",
+    "frames": 38,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "h",
+    "frames": 110,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "k",
+    "frames": 39,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "one",
+    "frames": 28,
+    "schema_version": 1,
+    "hands": true
+  },
+  {
+    "label": "three",
+    "frames": 73,
+    "schema_version": 1,
+    "hands": true
+  }
+]
