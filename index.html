@@ -1,164 +1,144 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SgSL Studio — Singapore Sign Language</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SgSL — Mei signs Singapore Sign Language</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Pinned library versions — exact builds the Kalidokit retarget is tuned to.
+       MediaPipe Holistic 0.5.x is a deprecated legacy solution; it is pinned to an
+       exact CDN build on purpose so it can't change under us. (Modernising to the
+       Tasks-Vision HolisticLandmarker is a separate, later hardening task.) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@0.6.7/lib/three-vrm.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/holistic.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <script type="importmap">
+  { "imports": { "kalidokit": "https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.es.js" } }
+  </script>
 </head>
 <body>
-  <header>
-    <h1><span class="logo">🤟</span> SgSL Studio</h1>
-    <p class="tagline">Learn, read and show Singapore Sign Language — a signing avatar with real signs, plus fingerspelling, right in your browser.</p>
-    <nav id="tabs">
-      <button class="tab active" data-panel="lookup">Show me a sign</button>
-      <button class="tab" data-panel="read">Read my signs</button>
-      <button class="tab" data-panel="practice">Practice</button>
-      <button class="tab" data-panel="alphabet">Alphabet</button>
+  <header class="header">
+    <h1>SgSL · Mei</h1>
+    <nav class="tabs">
+      <button class="tab active" data-tab="signit">Sign It</button>
+      <button class="tab" data-tab="record">Record</button>
+      <button class="tab" data-tab="library">Library</button>
     </nav>
   </header>
 
-  <main>
-    <!-- ============ LOOKUP: word/phrase → sign ============ -->
-    <section id="panel-lookup" class="panel active">
-      <div class="cols">
-        <div class="col">
-          <h2>Type a word or phrase</h2>
-          <form id="lookup-form" autocomplete="off">
-            <input id="lookup-input" type="text" placeholder="e.g. thank you" maxlength="60" />
-            <button type="submit" class="primary">Sign it</button>
-          </form>
-          <div id="lookup-card" class="card hidden">
-            <h3 id="lookup-word"></h3>
-            <div id="lookup-desc"></div>
-            <p class="fineprint">The avatar performs the lexical sign (two hands, body locations and
-              facial grammar) for words it knows, and fingerspells the rest. Animations are simplified
-              schematics — verify with <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">the SgSL Sign Bank</a> or
-              <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">SADeaf</a> videos.</p>
-          </div>
-          <div id="lookup-known" class="chips"></div>
-        </div>
-        <div class="col">
-          <h2>Avatar</h2>
-          <div id="avatar-picker" class="chips" style="margin-bottom:10px"></div>
-          <canvas id="avatar-canvas" width="420" height="470"></canvas>
-          <div class="controls">
-            <button id="replay-btn">▶ Replay</button>
-            <label>Speed
-              <select id="speed-sel">
-                <option value="0.6">Slow</option>
-                <option value="1" selected>Normal</option>
-                <option value="1.6">Fast</option>
-              </select>
-            </label>
-          </div>
-          <p id="spelled-so-far" class="spelled"></p>
-        </div>
+  <!-- ─── Sign It: text -> sign ─────────────────────────────── -->
+  <main id="tab-signit" class="main tab-content active">
+    <section class="record-panel">
+      <h2 class="sidebar-title">Type — Mei signs it</h2>
+      <div class="rec-label-row">
+        <input type="text" id="signit-input" class="rec-input" placeholder="e.g. thank you, hello, one">
+        <button id="btn-signit-play" class="btn btn-record">Sign</button>
       </div>
+      <div id="signit-chips" class="chips"></div>
+      <p class="hint">Green = in the library and signable. Grey = not recorded yet (skipped). Vocabulary grows as you record signs.</p>
+      <div id="signit-status" class="status status-info">Type a word or phrase and press Sign.</div>
     </section>
-
-    <!-- ============ READ: gesture → text/word ============ -->
-    <section id="panel-read" class="panel">
-      <div class="cols">
-        <div class="col">
-          <h2>Camera</h2>
-          <div class="camera-box">
-            <video id="video" playsinline muted></video>
-            <canvas id="overlay"></canvas>
-            <div id="cam-status" class="cam-status">Camera off</div>
-          </div>
-          <div class="controls">
-            <button id="cam-btn" class="primary">Start camera</button>
-          </div>
-          <p class="fineprint">Hold a fingerspelling handshape steady facing the camera.
-            The video never leaves your device — all processing is local.
-            J and Z involve motion and are not auto-detected yet (the avatar can still show them).</p>
-        </div>
-        <div class="col">
-          <h2>What I see</h2>
-          <div class="live-letter">
-            <div id="live-letter">–</div>
-            <svg id="hold-ring" viewBox="0 0 56 56">
-              <circle class="ring-bg" cx="28" cy="28" r="24"/>
-              <circle id="ring-fg" class="ring-fg" cx="28" cy="28" r="24"/>
-            </svg>
-          </div>
-          <div id="candidates" class="candidates"></div>
-          <h3>Spelled text</h3>
-          <div id="typed" class="typed">&nbsp;</div>
-          <div class="controls">
-            <button id="space-btn">Space</button>
-            <button id="backspace-btn">⌫ Backspace</button>
-            <button id="clear-btn">Clear</button>
-          </div>
-          <h3>Matching words</h3>
-          <div id="suggestions" class="chips"></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ PRACTICE ============ -->
-    <section id="panel-practice" class="panel">
-      <div class="cols">
-        <div class="col">
-          <h2>Target</h2>
-          <div class="practice-target">
-            <div id="practice-letter">A</div>
-            <canvas id="practice-avatar" width="300" height="320"></canvas>
-          </div>
-          <div class="controls">
-            <button id="practice-start" class="primary">Start practice</button>
-            <button id="practice-skip">Skip ›</button>
-            <label>Mode
-              <select id="practice-mode">
-                <option value="letters">Random letters</option>
-                <option value="word">Spell a word</option>
-              </select>
-            </label>
-          </div>
-          <input id="practice-word" class="hidden" type="text" placeholder="word to practise, e.g. hello (J/Z skipped)" maxlength="30" />
-          <p id="practice-progress" class="spelled"></p>
-        </div>
-        <div class="col">
-          <h2>Your hand</h2>
-          <div class="camera-box">
-            <video id="p-video" playsinline muted></video>
-            <canvas id="p-overlay"></canvas>
-            <div id="p-cam-status" class="cam-status">Camera off</div>
-          </div>
-          <div class="scorebar"><div id="match-bar"></div></div>
-          <p class="scoreline">Streak: <span id="streak">0</span> · Signed: <span id="score">0</span></p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ ALPHABET REFERENCE ============ -->
-    <section id="panel-alphabet" class="panel">
-      <h2>SgSL manual alphabet</h2>
-      <p class="fineprint">SgSL fingerspelling follows the ASL manual alphabet, except
-        <strong>T</strong>, which is modified locally (the ASL T handshape is offensive in Singapore).
-        Click any letter to see it animated.</p>
-      <div id="alpha-grid" class="alpha-grid"></div>
-      <div class="cols">
-        <div class="col">
-          <canvas id="alpha-canvas" width="380" height="400"></canvas>
-        </div>
-        <div class="col">
-          <h3 id="alpha-letter"></h3>
-          <p id="alpha-desc"></p>
-          <p id="alpha-note" class="note hidden"></p>
+    <section class="viewer">
+      <div id="signit-viewport" class="viewport"></div>
+      <div class="controls">
+        <div class="control-row">
+          <button id="btn-signit-replay" class="btn">Replay</button>
+          <button id="btn-signit-stop" class="btn">Stop</button>
+          <label class="speed-control">Speed:
+            <input type="range" id="signit-speed" min="0.2" max="3" step="0.1" value="1">
+            <span id="signit-speed-label">1.0x</span>
+          </label>
         </div>
       </div>
     </section>
   </main>
 
-  <footer>
-    <p>SgSL Studio is an independent learning aid, not an official SADeaf resource.
-      SgSL blends Shanghainese Sign Language, ASL, SEE and local signs — learn from the community:
-      <a href="https://sadeaf.org.sg/" target="_blank" rel="noopener">Singapore Association for the Deaf</a> ·
-      <a href="https://blogs.ntu.edu.sg/sgslsignbank/" target="_blank" rel="noopener">NTU SgSL Sign Bank</a> ·
-      <a href="https://www.deaf.sg/" target="_blank" rel="noopener">deaf.sg</a></p>
-  </footer>
+  <!-- ─── Record: webcam -> sign ────────────────────────────── -->
+  <main id="tab-record" class="main tab-content">
+    <section class="record-panel">
+      <h2 class="sidebar-title">Camera</h2>
+      <div class="camera-container">
+        <video id="rec-video" class="rec-video" playsinline></video>
+        <canvas id="rec-overlay" class="rec-overlay"></canvas>
+        <div id="rec-camera-status" class="camera-status">Camera loading...</div>
+        <div id="rec-framing" class="framing-badge bad">Framing: 0%</div>
+      </div>
+      <div class="rec-controls">
+        <div class="rec-label-row">
+          <label for="rec-label">Sign label:</label>
+          <input type="text" id="rec-label" class="rec-input" placeholder="e.g. hello, thank_you">
+        </div>
+        <div class="rec-btn-row">
+          <button id="btn-calibrate" class="btn" disabled>Calibrate (arms at sides)</button>
+          <button id="btn-rec-start" class="btn btn-record" disabled>Record</button>
+          <button id="btn-rec-stop" class="btn" disabled>Stop</button>
+        </div>
+        <div id="rec-timer" class="rec-timer"></div>
+        <label class="speed-control">Margin of error (tolerance):
+          <input type="range" id="tolerance-slider" min="2" max="20" step="1" value="8">
+          <span id="tolerance-label">8%</span>
+        </label>
+      </div>
+      <div id="quality-panel" class="quality-panel hidden">
+        <h3 class="quality-title">Quality Check</h3>
+        <div id="quality-scores" class="quality-scores"></div>
+        <div id="quality-overall" class="quality-overall"></div>
+        <h3 class="quality-title">Replay Fidelity</h3>
+        <div id="fidelity-readout" class="quality-overall"></div>
+        <div class="rec-btn-row">
+          <button id="btn-rec-preview" class="btn">Preview on Avatar</button>
+          <button id="btn-rec-save" class="btn btn-save" disabled>Save to device</button>
+          <button id="btn-rec-export" class="btn">Export JSON</button>
+          <button id="btn-rec-discard" class="btn btn-discard">Discard</button>
+        </div>
+      </div>
+      <div class="rec-label-row">
+        <label for="rec-import">Import sign file:</label>
+        <input type="file" id="rec-import" accept="application/json,.json">
+      </div>
+      <div id="rec-status" class="status status-info">Enter a sign label and click Record.</div>
+    </section>
+    <section class="viewer">
+      <div id="rec-avatar-viewport" class="viewport"></div>
+      <div id="rec-avatar-status" class="status status-info">Avatar will mirror your signing in real-time.</div>
+      <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+    </section>
+  </main>
+
+  <!-- ─── Library: browse + play ────────────────────────────── -->
+  <main id="tab-library" class="main tab-content">
+    <aside class="sidebar">
+      <h2 class="sidebar-title">Sign Library</h2>
+      <div id="lib-sign-list" class="sign-list"><p class="hint">Open this tab to load signs…</p></div>
+    </aside>
+    <section class="viewer">
+      <div id="lib-viewport" class="viewport"></div>
+      <div class="controls">
+        <div class="progress-bar"><div id="lib-progress-fill" class="progress-fill"></div></div>
+        <div class="control-row">
+          <button id="btn-lib-replay" class="btn">Replay</button>
+          <button id="btn-lib-pause" class="btn">Pause</button>
+          <button id="btn-lib-stop" class="btn">Stop</button>
+          <span id="lib-frame-info" class="frame-info">0 / 0</span>
+          <label class="speed-control">Speed:
+            <input type="range" id="lib-speed" min="0.2" max="3" step="0.1" value="1">
+            <span id="lib-speed-label">1.0x</span>
+          </label>
+        </div>
+      </div>
+      <div id="lib-status" class="status status-info">Initializing…</div>
+    </section>
+  </main>
 
   <script type="module" src="js/app.js"></script>
 </body>

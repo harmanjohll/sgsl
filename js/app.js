@@ -1,357 +1,191 @@
-/**
- * SgSL Studio — application glue.
- * Wires the avatar, classifier, tracker and dictionary into four modes:
- * lookup (word → sign), read (sign → word), practice, and alphabet reference.
- */
+/* ============================================================
+   SgSL — App Controller
+   ============================================================
+   Tab switching + per-tab UI wiring. Three tabs:
+     - Sign It : text -> SgSL gloss -> chained avatar playback
+     - Record  : webcam -> MediaPipe Holistic -> record a sign
+     - Library : browse + play the recorded sign library
 
-import { Avatar } from "./avatar.js";
-import { BodyAvatar } from "./body-avatar.js";
-import { SIGNS } from "./signs.js";
-import { classify, Smoother, MAX_DIST } from "./classifier.js";
-import { Tracker } from "./tracker.js";
-import { DICTIONARY, lookupWord, suggest } from "./dictionary.js";
-import { LETTER_POSES, STATIC_LETTERS } from "./poses.js";
+   Heavy modules (each owns a WebGL avatar) are lazy-initialised the
+   first time their tab is opened.
+   ============================================================ */
 
-const $ = (id) => document.getElementById(id);
+import { Playback } from './player.js';
+import * as signsSource from './signs-source.js';
+import { signText, resolveLabels } from './sentence-engine.js';
+import { parseSentence } from './gloss.js';
 
-/* ---------------- tabs ---------------- */
-const tabs = document.querySelectorAll(".tab");
-tabs.forEach((tab) =>
-  tab.addEventListener("click", () => {
-    tabs.forEach((t) => t.classList.toggle("active", t === tab));
-    document
-      .querySelectorAll(".panel")
-      .forEach((p) =>
-        p.classList.toggle("active", p.id === `panel-${tab.dataset.panel}`)
-      );
-    if (tab.dataset.panel !== "read" && readTracker.running) stopRead();
-    if (tab.dataset.panel !== "practice" && practiceTracker.running)
-      stopPractice();
-  })
-);
+// ─── Tab switching ──────────────────────────────────────────
+const tabs = document.querySelectorAll('.tab');
+const contents = document.querySelectorAll('.tab-content');
 
-/* ---------------- lookup mode ---------------- */
-import { AVATARS } from "./body-model.js";
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const target = tab.dataset.tab;
+    tabs.forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    contents.forEach(c => c.classList.toggle('active', c.id === `tab-${target}`));
 
-const savedAvatar = localStorage.getItem("sgsl-avatar") || "wei";
-const avatar = new BodyAvatar($("avatar-canvas"), savedAvatar);
-let lastSpelled = "";
-
-// avatar picker
-const picker = $("avatar-picker");
-for (const [key, a] of Object.entries(AVATARS)) {
-  const chip = document.createElement("button");
-  chip.className = "chip" + (key === avatar.avatarKey ? " selected-chip" : "");
-  chip.textContent = a.label;
-  chip.addEventListener("click", () => {
-    avatar.setAvatar(key);
-    localStorage.setItem("sgsl-avatar", key);
-    picker
-      .querySelectorAll(".chip")
-      .forEach((c) => c.classList.toggle("selected-chip", c === chip));
+    if (target === 'signit' && !signitLoaded) initSignIt();
+    if (target === 'library' && !libraryLoaded) initLibrary();
+    if (target === 'record' && !recorderLoaded) initRecorder();
   });
-  picker.appendChild(chip);
+});
+
+function setStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = `status status-${type}`;
 }
 
-avatar.onItem = (label, kind) => {
-  const trail = $("spelled-so-far");
-  trail.textContent +=
-    (kind === "sign" ? `✋${label.toUpperCase()}` : label.toUpperCase()) + "  ";
-};
+// ─── Sign It tab (text -> sign) ─────────────────────────────
+let signitLoaded = false;
+let signitPlayback = null;
 
-function doLookup(text) {
-  const clean = text.trim();
-  if (!clean) return;
-  lastSpelled = clean;
-  $("spelled-so-far").textContent = "";
-  const items = avatar.sign(clean);
-  if (!items.length) return;
+function initSignIt() {
+  signitLoaded = true;
+  signitPlayback = new Playback('signit-viewport');
+  signitPlayback.on('status', (m, t) => setStatus('signit-status', m, t));
 
-  // Explain, per word, whether a lexical sign or fingerspelling is used.
-  const lines = items.map((it) => {
-    if (it.kind === "sign") {
-      const desc =
-        (SIGNS[it.word] && SIGNS[it.word].description) ||
-        (lookupWord(it.word) || {}).description ||
-        "";
-      return `✋ ${it.word.toUpperCase()} — lexical sign: ${desc}`;
+  const input = document.getElementById('signit-input');
+  const btn = document.getElementById('btn-signit-play');
+  const chips = document.getElementById('signit-chips');
+
+  // Live coverage preview as the user types.
+  async function refreshChips() {
+    const text = input?.value || '';
+    if (!text.trim()) { if (chips) chips.innerHTML = ''; return; }
+    const manifest = await signsSource.getManifest();
+    const resolved = resolveLabels(parseSentence(text), manifest.map(s => s.label));
+    if (chips) {
+      chips.innerHTML = resolved.map(r =>
+        `<span class="chip ${r.available ? 'chip-on' : 'chip-off'}" title="${r.available ? 'in library' : 'not in library — will be skipped'}">${r.sign}</span>`
+      ).join('') || '<span class="hint">No signable tokens.</span>';
     }
-    if (it.note) return `🔤 ${it.word.toUpperCase()} — ${it.note}`;
-    return `🔤 ${it.word.toUpperCase()} — no lexical sign in the library yet, fingerspelled letter by letter.`;
-  });
-  $("lookup-word").textContent = clean.toUpperCase();
-  $("lookup-desc").innerHTML = "";
-  for (const line of lines) {
-    const p = document.createElement("div");
-    p.textContent = line;
-    p.style.marginBottom = "6px";
-    $("lookup-desc").appendChild(p);
   }
-  $("lookup-card").classList.remove("hidden");
-}
+  input?.addEventListener('input', () => { clearTimeout(refreshChips._t); refreshChips._t = setTimeout(refreshChips, 200); });
 
-$("lookup-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  doLookup($("lookup-input").value);
-});
-$("replay-btn").addEventListener("click", () => {
-  if (lastSpelled) {
-    $("spelled-so-far").textContent = "";
-    avatar.sign(lastSpelled);
-  }
-});
-$("speed-sel").addEventListener("change", (e) => {
-  avatar.speed = parseFloat(e.target.value);
-});
-
-// Chips for every dictionary word
-const knownBox = $("lookup-known");
-for (const e of DICTIONARY) {
-  const chip = document.createElement("button");
-  chip.className = "chip";
-  chip.textContent = e.word;
-  chip.addEventListener("click", () => {
-    $("lookup-input").value = e.word;
-    doLookup(e.word);
-  });
-  knownBox.appendChild(chip);
-}
-
-/* ---------------- read mode (sign → text) ---------------- */
-const readTracker = new Tracker($("video"), $("overlay"));
-const smoother = new Smoother();
-let typed = "";
-
-const RING_LEN = 2 * Math.PI * 24;
-$("ring-fg").style.strokeDasharray = `${RING_LEN}`;
-$("ring-fg").style.strokeDashoffset = `${RING_LEN}`;
-
-function renderTyped() {
-  $("typed").textContent = typed || " ";
-  const lastWord = typed.split(" ").pop().toLowerCase();
-  const box = $("suggestions");
-  box.innerHTML = "";
-  for (const e of suggest(lastWord)) {
-    const chip = document.createElement("button");
-    chip.className = "chip";
-    chip.textContent = e.word;
-    chip.title = e.description;
-    chip.addEventListener("click", () => {
-      const parts = typed.split(" ");
-      parts[parts.length - 1] = e.word.toUpperCase();
-      typed = parts.join(" ") + " ";
-      renderTyped();
-    });
-    box.appendChild(chip);
-  }
-}
-
-readTracker.onFrame = (lms) => {
-  let top = null;
-  let ranked = [];
-  if (lms) {
-    ranked = classify(lms);
-    if (ranked.length && ranked[0].dist <= MAX_DIST) top = ranked[0].letter;
-  }
-  const { stable, progress, committed } = smoother.push(top);
-
-  $("live-letter").textContent = stable || "–";
-  $("ring-fg").style.strokeDashoffset = `${RING_LEN * (1 - progress)}`;
-
-  const box = $("candidates");
-  box.innerHTML = "";
-  for (const r of ranked.slice(0, 3)) {
-    const div = document.createElement("div");
-    div.className = "cand";
-    div.innerHTML = `<span>${r.letter}</span><div class="bar"><div style="width:${Math.round(
-      r.score * 100
-    )}%"></div></div>`;
-    box.appendChild(div);
-  }
-
-  if (committed) {
-    typed += committed;
-    renderTyped();
-  }
-};
-
-async function startRead() {
-  $("cam-btn").disabled = true;
-  try {
-    await readTracker.start((msg) => ($("cam-status").textContent = msg));
-    $("cam-status").textContent = "";
-    $("cam-status").classList.add("hidden");
-    $("cam-btn").textContent = "Stop camera";
-  } catch (err) {
-    $("cam-status").textContent = `Could not start: ${err.message}`;
-  }
-  $("cam-btn").disabled = false;
-}
-function stopRead() {
-  readTracker.stop();
-  smoother.reset();
-  $("cam-btn").textContent = "Start camera";
-  $("cam-status").textContent = "Camera off";
-  $("cam-status").classList.remove("hidden");
-}
-$("cam-btn").addEventListener("click", () =>
-  readTracker.running ? stopRead() : startRead()
-);
-$("space-btn").addEventListener("click", () => {
-  if (typed && !typed.endsWith(" ")) typed += " ";
-  renderTyped();
-});
-$("backspace-btn").addEventListener("click", () => {
-  typed = typed.slice(0, -1);
-  renderTyped();
-});
-$("clear-btn").addEventListener("click", () => {
-  typed = "";
-  renderTyped();
-});
-
-/* ---------------- practice mode ---------------- */
-const practiceAvatar = new Avatar($("practice-avatar"));
-const practiceTracker = new Tracker($("p-video"), $("p-overlay"));
-let practiceTarget = null;
-let practiceWord = "";
-let practiceIdx = 0;
-let streak = 0;
-let score = 0;
-let matchSince = null;
-const MATCH_HOLD_MS = 900;
-
-$("practice-mode").addEventListener("change", (e) => {
-  $("practice-word").classList.toggle("hidden", e.target.value !== "word");
-});
-
-function nextTarget() {
-  const mode = $("practice-mode").value;
-  if (mode === "word") {
-    // J and Z need motion, which live recognition can't verify yet — skip them.
-    practiceWord = ($("practice-word").value || "hello")
-      .toUpperCase()
-      .replace(/[^A-Z]/g, "")
-      .replace(/[JZ]/g, "");
-    if (!practiceWord) practiceWord = "HELLO";
-    if (practiceIdx >= practiceWord.length) practiceIdx = 0;
-    practiceTarget = practiceWord[practiceIdx];
-    $("practice-progress").textContent = practiceWord
-      .split("")
-      .map((c, i) => (i < practiceIdx ? c : i === practiceIdx ? `[${c}]` : c))
-      .join(" ");
-  } else {
-    const pool = STATIC_LETTERS;
-    let next;
-    do {
-      next = pool[Math.floor(Math.random() * pool.length)];
-    } while (next === practiceTarget && pool.length > 1);
-    practiceTarget = next;
-    $("practice-progress").textContent = "";
-  }
-  $("practice-letter").textContent = practiceTarget;
-  practiceAvatar.show(practiceTarget);
-  matchSince = null;
-  $("match-bar").style.width = "0%";
-}
-
-function advance() {
-  score++;
-  streak++;
-  $("score").textContent = score;
-  $("streak").textContent = streak;
-  if ($("practice-mode").value === "word") {
-    practiceIdx++;
-    if (practiceIdx >= practiceWord.length) practiceIdx = 0;
-  }
-  nextTarget();
-}
-
-practiceTracker.onFrame = (lms) => {
-  if (!practiceTarget) return;
-  let match = false;
-  if (lms) {
-    const ranked = classify(lms);
-    match =
-      ranked.length &&
-      ranked[0].letter === practiceTarget &&
-      ranked[0].dist <= MAX_DIST;
-  }
-  const now = performance.now();
-  if (match) {
-    if (matchSince === null) matchSince = now;
-    const p = Math.min(1, (now - matchSince) / MATCH_HOLD_MS);
-    $("match-bar").style.width = `${Math.round(p * 100)}%`;
-    if (p >= 1) advance();
-  } else {
-    matchSince = null;
-    $("match-bar").style.width = "0%";
-    if (lms === null) return;
-  }
-};
-
-async function startPractice() {
-  $("practice-start").disabled = true;
-  try {
-    await practiceTracker.start(
-      (msg) => ($("p-cam-status").textContent = msg)
-    );
-    $("p-cam-status").classList.add("hidden");
-    $("practice-start").textContent = "Stop";
-    practiceIdx = 0;
-    streak = 0;
-    $("streak").textContent = "0";
-    nextTarget();
-  } catch (err) {
-    $("p-cam-status").textContent = `Could not start: ${err.message}`;
-  }
-  $("practice-start").disabled = false;
-}
-function stopPractice() {
-  practiceTracker.stop();
-  practiceTarget = null;
-  $("practice-start").textContent = "Start practice";
-  $("p-cam-status").textContent = "Camera off";
-  $("p-cam-status").classList.remove("hidden");
-  practiceAvatar.rest();
-}
-$("practice-start").addEventListener("click", () =>
-  practiceTracker.running ? stopPractice() : startPractice()
-);
-$("practice-skip").addEventListener("click", () => {
-  if (practiceTarget) {
-    streak = 0;
-    $("streak").textContent = "0";
-    if ($("practice-mode").value === "word") {
-      practiceIdx = (practiceIdx + 1) % practiceWord.length;
-    }
-    nextTarget();
-  }
-});
-
-/* ---------------- alphabet reference ---------------- */
-const alphaAvatar = new Avatar($("alpha-canvas"));
-const grid = $("alpha-grid");
-for (const letter of Object.keys(LETTER_POSES)) {
-  const btn = document.createElement("button");
-  btn.className = "alpha-cell" + (letter === "T" ? " special" : "");
-  btn.textContent = letter;
-  btn.addEventListener("click", () => {
-    grid
-      .querySelectorAll(".alpha-cell")
-      .forEach((c) => c.classList.toggle("selected", c === btn));
-    const pose = LETTER_POSES[letter];
-    alphaAvatar.show(letter);
-    $("alpha-letter").textContent = `Letter ${letter}`;
-    $("alpha-desc").textContent = pose.desc || "";
-    const note = $("alpha-note");
-    if (pose.sgslNote) {
-      note.textContent = pose.sgslNote;
-      note.classList.remove("hidden");
+  async function play() {
+    const text = input?.value?.trim();
+    if (!text) { setStatus('signit-status', 'Type something for Mei to sign.', 'error'); return; }
+    if (!signitPlayback.ready) { setStatus('signit-status', 'Avatar still loading…', 'loading'); }
+    setStatus('signit-status', 'Building sentence…', 'loading');
+    const resolved = await signText(text, signitPlayback);
+    const have = resolved.filter(r => r.available).length;
+    if (!have) {
+      setStatus('signit-status', 'None of those words are in the library yet. Record them in the Record tab.', 'error');
     } else {
-      note.classList.add("hidden");
+      const missing = resolved.filter(r => !r.available).map(r => r.sign);
+      setStatus('signit-status',
+        `Signing ${have} sign(s).` + (missing.length ? ` Skipped (not in library): ${missing.join(', ')}.` : ''),
+        'info');
     }
-  });
-  grid.appendChild(btn);
+    refreshChips();
+  }
+
+  btn?.addEventListener('click', play);
+  input?.addEventListener('keydown', e => { if (e.key === 'Enter') play(); });
+
+  document.getElementById('btn-signit-replay')?.addEventListener('click', () => signitPlayback.replay());
+  document.getElementById('btn-signit-stop')?.addEventListener('click', () => signitPlayback.stop());
+  wireSpeed('signit-speed', 'signit-speed-label', signitPlayback);
+
+  setStatus('signit-status', 'Type a word or phrase and press Sign.', 'info');
 }
-grid.querySelector(".alpha-cell").click();
+
+// ─── Library tab ────────────────────────────────────────────
+let libraryLoaded = false;
+let libraryPlayback = null;
+
+async function initLibrary() {
+  libraryLoaded = true;
+  libraryPlayback = new Playback('lib-viewport');
+  libraryPlayback.on('status', (m, t) => setStatus('lib-status', m, t))
+    .on('progress', (fi, n) => {
+      const prog = document.getElementById('lib-progress-fill');
+      const info = document.getElementById('lib-frame-info');
+      if (prog) prog.style.width = `${(fi / Math.max(n - 1, 1)) * 100}%`;
+      if (info) info.textContent = `${fi + 1} / ${n}`;
+    });
+
+  await renderLibraryList();
+
+  document.getElementById('btn-lib-replay')?.addEventListener('click', () => libraryPlayback.replay());
+  document.getElementById('btn-lib-pause')?.addEventListener('click', () => libraryPlayback.togglePause());
+  document.getElementById('btn-lib-stop')?.addEventListener('click', () => libraryPlayback.stop());
+  wireSpeed('lib-speed', 'lib-speed-label', libraryPlayback);
+}
+
+async function renderLibraryList() {
+  const list = document.getElementById('lib-sign-list');
+  if (!list) return;
+  let manifest = [];
+  try { manifest = await signsSource.getManifest(); }
+  catch (err) { setStatus('lib-status', `Failed to load signs: ${err.message}`, 'error'); return; }
+
+  list.innerHTML = '';
+  if (!manifest.length) {
+    list.innerHTML = '<p class="hint">No signs yet. Record one in the Record tab.</p>';
+    return;
+  }
+  for (const s of manifest) {
+    const row = document.createElement('div');
+    row.className = 'sign-row';
+
+    const btn = document.createElement('button');
+    btn.className = 'sign-btn';
+    btn.textContent = s.label;
+    btn.title = `${s.frames} frames · ${s.source}`;
+    btn.addEventListener('click', () => {
+      list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      libraryPlayback.playLabel(s.label);
+    });
+
+    const tag = document.createElement('span');
+    tag.className = `src-tag src-${s.source}`;
+    tag.textContent = s.source === 'local' ? 'device' : s.source;
+
+    row.appendChild(btn);
+    row.appendChild(tag);
+
+    if (s.source === 'local') {
+      const del = document.createElement('button');
+      del.className = 'sign-del';
+      del.textContent = '×';
+      del.title = `Delete local "${s.label}"`;
+      del.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete your device recording of "${s.label}"?`)) return;
+        const res = await signsSource.deleteSign(s.label);
+        if (res.ok) { row.remove(); setStatus('lib-status', `"${s.label}" removed from this device.`, 'info'); }
+      });
+      row.appendChild(del);
+    }
+    list.appendChild(row);
+  }
+  setStatus('lib-status', `${manifest.length} signs loaded. Click one to play.`, 'success');
+}
+
+// ─── Record tab ─────────────────────────────────────────────
+let recorderLoaded = false;
+async function initRecorder() {
+  recorderLoaded = true;
+  await import('./recorder.js');
+}
+
+// ─── Shared speed-slider wiring ─────────────────────────────
+function wireSpeed(sliderId, labelId, playback) {
+  const slider = document.getElementById(sliderId);
+  const label = document.getElementById(labelId);
+  if (!slider) return;
+  slider.addEventListener('input', () => {
+    const s = parseFloat(slider.value);
+    playback.setSpeed(s);
+    if (label) label.textContent = `${s.toFixed(1)}x`;
+  });
+}
+
+// Open Sign-It by default.
+initSignIt();

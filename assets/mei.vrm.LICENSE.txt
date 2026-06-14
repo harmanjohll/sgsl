@@ -1,0 +1,22 @@
+Mei avatar model — license & provenance
+========================================
+
+File:    mei.vrm
+Format:  VRM 0.x (loads under @pixiv/three-vrm 0.6.7 / THREE.VRM.from)
+Source:  "three-vrm-girl" — the reference example model that ships inside
+         pixiv/three-vrm v0.6.7
+         https://raw.githubusercontent.com/pixiv/three-vrm/v0.6.7/packages/three-vrm/examples/models/three-vrm-girl.vrm
+Author:  pixiv Inc.
+
+Embedded VRM license (meta.otherLicenseUrl), VRoid Hub terms:
+  - allowed to use:        everyone
+  - redistribution:        allow
+  - modification:          allow
+  - personal commercial:   allow (profit)
+  - corporate commercial:  allow
+  - credit:                unnecessary
+
+This is a STAND-IN "Mei". It is license-clean to ship, modify, and use
+commercially. To use a different look, replace this file with any other
+VRM **0.x** model that has humanoid finger bones and the a/i/u/e/o + blink
+blendshape presets — no code change required.
