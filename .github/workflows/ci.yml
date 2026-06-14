@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Syntax-check all JS modules
+        run: |
+          for f in sgsl-app/js/*.js; do node --check "$f"; done
+
+      - name: Unit + integration tests
+        run: node test/test.mjs
+
+      - name: Replay-fidelity guard (committed signs)
+        run: node test/replay_error.mjs
+
+      - name: Manifest is up to date
+        run: |
+          python tools/build_manifest.py
+          git diff --exit-code -- sgsl-app/signs/_manifest.json \
+            || (echo "::error::sgsl-app/signs/_manifest.json is stale — run tools/build_manifest.py and commit." && exit 1)
