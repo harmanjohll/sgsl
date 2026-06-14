@@ -10,7 +10,7 @@
 
    The chained sequence concatenates each sign's frames with re-based
    timestamps, inserts a short min-jerk transition bridge between signs
-   (so Mei doesn't snap pose-to-pose) and a brief hold between them (so
+   (so Fumi doesn't snap pose-to-pose) and a brief hold between them (so
    distinct signs read as distinct to a deaf reader). Playback runs
    through the same Playback engine as the Library tab.
    ============================================================ */
