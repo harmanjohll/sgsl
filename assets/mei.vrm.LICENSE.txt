@@ -1,4 +1,4 @@
-Avatar: "Mei" hero model
+Avatar: "Fumi" hero model
 File: mei.vrm
 Source model: "Sakurada Fumiriya" — pixiv VRoid sample (vrm-samples)
 Format: VRM 0.x

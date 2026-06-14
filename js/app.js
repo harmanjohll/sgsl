@@ -68,7 +68,7 @@ function initSignIt() {
 
   async function play() {
     const text = input?.value?.trim();
-    if (!text) { setStatus('signit-status', 'Type something for Mei to sign.', 'error'); return; }
+    if (!text) { setStatus('signit-status', 'Type something for Fumi to sign.', 'error'); return; }
     if (!signitPlayback.ready) { setStatus('signit-status', 'Avatar still loading…', 'loading'); }
     setStatus('signit-status', 'Building sentence…', 'loading');
     const resolved = await signText(text, signitPlayback);
