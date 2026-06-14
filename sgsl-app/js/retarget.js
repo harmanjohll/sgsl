@@ -4,7 +4,7 @@
 
    Diverges from the demo where necessary for laptop-webcam signing:
    - Arms are gated per-side with 5-frame hysteresis so MediaPipe
-     hand-detection flicker doesn't collapse Mei to rest.
+     hand-detection flicker doesn't collapse Fumi to rest.
    - Upper-arm rotation is computed DIRECTLY from the 2D
      shoulder→wrist vector when the hand is detected. Kalidokit's
      pose solver under-shoots arm height when the elbow is off-frame
