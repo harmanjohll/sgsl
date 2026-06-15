@@ -38,6 +38,20 @@ const WRIST_VIS_THRESH = 0.5;
 // rest. 5 frames at ~30 fps = ~160 ms grace window.
 const ARM_HYSTERESIS_FRAMES = 5;
 
+// ── Hands-first arm IK tuning ───────────────────────────────────
+// Map the tracked wrist's screen position (normalized 0..1) to a world
+// target on a plane in front of the chest, sized by the avatar's own
+// shoulder width, then 2-bone-IK the arm to reach it. The avatar's real
+// shoulder anchors the solve, so no monocular arm-depth guessing is done.
+// MIRROR_X / FRONT_Z signs are pinned by tools/ik_harness.mjs.
+const MIRROR_X = 1;          // screen-x → world-x direction (reflection mirror)
+const FRONT_Z = 1;           // +1 = signing plane sits toward the camera
+const BOX_W = 2.4;           // signing-box width  in shoulder-widths
+const BOX_H = 3.0;           // signing-box height in shoulder-widths
+const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
+const ARM_IK_LERP = 0.45;    // per-frame slerp toward the IK solution
+const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
 let oldLookTarget = new THREE.Euler();
 
 export class SMPLXRetarget {
@@ -148,44 +162,75 @@ export class SMPLXRetarget {
   }
 
   /**
-   * Compute upper-arm Euler directly from MediaPipe 2D shoulder→wrist.
-   * This sidesteps Kalidokit's pose solver, which under-shoots arm
-   * height when the elbow is extrapolated (laptop crop case).
-   *
-   * We return an object compatible with _rigRotation:
-   *  { x, y, z, rotationOrder }.
-   *
-   * `side` is "Right" or "Left" from the SIGNER'S perspective.
-   * `shoulder`, `wrist` are MediaPipe 2D landmarks (x,y in [0..1]).
+   * Aim a bone so that the local direction toward its child (`restAxisLocal`,
+   * the fixed bind offset, measured once in avatar.js) points along a desired
+   * WORLD direction. We solve for the bone's LOCAL quaternion:
+   *   worldChildDir = parentWorldQ · boneQ · restAxisLocal
+   * so   boneQ = setFromUnitVectors(restAxisLocal, parentWorldQ⁻¹ · worldDir).
+   * The minimal-rotation result ignores roll about the bone axis (wrist roll
+   * comes from the hand solve), which is exactly what we want for placement.
    */
-  _directUpperArm(side, shoulder, wrist) {
-    if (!shoulder || !wrist) return null;
-    // MediaPipe 2D convention: +x right, +y down.
-    // Rest upper-arm in the VRM hangs straight down (shoulder→wrist
-    // vector pointing +y in the image).
-    const dx = wrist.x - shoulder.x;
-    const dy = wrist.y - shoulder.y;
+  _aimBone(bone, restAxisLocal, worldDir, lerpAmount = ARM_IK_LERP) {
+    if (!bone || !bone.parent) return;
+    if (worldDir.lengthSq() < 1e-9) return;
+    const pq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+    const localDir = worldDir.clone().applyQuaternion(pq.invert());
+    if (localDir.lengthSq() < 1e-9) return;
+    localDir.normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(restAxisLocal, localDir);
+    bone.quaternion.slerp(q, lerpAmount);
+  }
 
-    // Angle from straight-down, measured CCW when viewed from the
-    // front. atan2(dx, dy): 0 = straight down, +π/2 = arm out to
-    // the signer's right (camera's left side of frame).
-    const angle = Math.atan2(dx, dy);
+  /**
+   * Hands-first 2-bone IK: reach `side`'s hand to the tracked wrist's screen
+   * position. Uses ONLY reliable signals — the 2D wrist (x,y in [0..1]) and
+   * the avatar's own shoulder world position — never a guessed arm depth.
+   * `screen` is any landmark with {x,y}: the hand's wrist, or a pose wrist.
+   */
+  _solveArmIK(vrm, side, screen) {
+    const rig = this._avatar?.armRig?.[side];
+    if (!rig || !screen) return false;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const ua = vrm.humanoid.getBoneNode(BN[`${side}UpperArm`]);
+    const la = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    if (!ua || !la) return false;
 
-    // For a VRM facing the camera (rotated Math.PI in the scene):
-    //   RightUpperArm.rotation.z > 0 raises the right arm
-    //   LeftUpperArm.rotation.z  < 0 raises the left arm
-    // The sign flip takes care of the mirror.
-    const sign = (side === "Right") ? 1 : -1;
-    const zRot = sign * angle;
+    // Shoulder anchors + signing-box size from the avatar's current pose.
+    const Rs = vrm.humanoid.getBoneNode(BN.RightUpperArm).getWorldPosition(new THREE.Vector3());
+    const Ls = vrm.humanoid.getBoneNode(BN.LeftUpperArm).getWorldPosition(new THREE.Vector3());
+    const mid = Rs.clone().add(Ls).multiplyScalar(0.5);
+    const shoulderW = Rs.distanceTo(Ls) || 0.25;
 
-    // Pitch (x rotation) — use the horizontal distance from shoulder
-    // to wrist as a very rough proxy for "how forward" the hand is.
-    // Sign language is mostly frontal, so keep this small and let
-    // Kalidokit's lower-arm handle forward reach.
-    const horizontalReach = Math.abs(dx);
-    const xRot = -0.2 * clamp(horizontalReach - 0.15, 0, 1);
+    // Screen → world target. Image y is down, so invert for world up.
+    const T = new THREE.Vector3(
+      mid.x + (0.5 - screen.x) * shoulderW * BOX_W * MIRROR_X,
+      mid.y + (0.5 - screen.y) * shoulderW * BOX_H,
+      mid.z + shoulderW * BOX_DEPTH * FRONT_Z,
+    );
 
-    return { x: xRot, y: 0, z: zRot, rotationOrder: "XYZ" };
+    const S = (side === "Right" ? Rs : Ls).clone();
+    const { L1, L2, upperRestAxis, lowerRestAxis } = rig;
+
+    // Planar 2-bone IK (law of cosines).
+    const toT = T.clone().sub(S);
+    const d = clampNum(toT.length(), Math.abs(L1 - L2) + 1e-3, L1 + L2 - 1e-3);
+    const axis = toT.lengthSq() > 1e-9 ? toT.clone().normalize() : new THREE.Vector3(0, -1, 0);
+    const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    // Pole hint: elbow bends down, toward the camera, and outward per side.
+    const outX = (side === "Right" ? Rs.x : Ls.x) - mid.x;
+    const pole = new THREE.Vector3(Math.sign(outX || (side === "Right" ? 1 : -1)) * 0.3, -1, 0.4 * FRONT_Z);
+    let perp = pole.sub(axis.clone().multiplyScalar(pole.dot(axis)));
+    if (perp.lengthSq() < 1e-9) perp = new THREE.Vector3(0, -1, 0);
+    perp.normalize();
+    const E = S.clone().add(axis.clone().multiplyScalar(a)).add(perp.multiplyScalar(h));
+
+    // Aim upper arm S→E, refresh its world matrix, then aim lower arm E→T.
+    this._aimBone(ua, upperRestAxis, E.clone().sub(S));
+    ua.updateWorldMatrix(true, true);
+    const Ew = la.getWorldPosition(new THREE.Vector3());
+    this._aimBone(la, lowerRestAxis, T.clone().sub(Ew));
+    return true;
   }
 
   applyFromMediaPipe(vrm, results) {
@@ -244,59 +289,45 @@ export class SMPLXRetarget {
     const signerRightArmOn = this._rightArmStreak > 0;
     const signerLeftArmOn  = this._leftArmStreak  > 0;
 
+    // Torso (optional, lightly damped) — only when a full pose is present.
+    // The avatar otherwise stays planted; arms below do NOT depend on this.
     if (poseVisible && pose3DLandmarks) {
       riggedPose = Kalidokit.Pose.solve(pose3DLandmarks, pose2DLandmarks, solveOpts);
       if (riggedPose) {
-        if (this._avatar) this._avatar.markActive();
-
-        // Torso: small dampeners so MediaPipe noise doesn't tilt the
-        // avatar. Hips position transfer is intentionally disabled.
-        this._rigRotation(vrm, "Hips", riggedPose.Hips.rotation, 0.2, 0.15);
-        this._rigRotation(vrm, "Chest", riggedPose.Spine, 0.1, 0.15);
-        this._rigRotation(vrm, "Spine", riggedPose.Spine, 0.2, 0.15);
-
-        // MediaPipe 2D shoulders: 11 = signer's right, 12 = signer's left.
-        const rightShoulder = pose2DLandmarks?.[11];
-        const leftShoulder  = pose2DLandmarks?.[12];
-        // Hand wrist landmark within a hand array is index 0.
-        const rightWrist = rightHandLandmarks?.[0];
-        const leftWrist  = leftHandLandmarks?.[0];
-
-        // Right arm
-        if (signerRightArmOn) {
-          // Prefer direct 2D computation when we have hand + shoulder.
-          // It bypasses Kalidokit's elbow extrapolation, which was
-          // under-shooting arm height on laptop crops.
-          const direct = (rightWrist && rightShoulder)
-            ? this._directUpperArm("Right", rightShoulder, rightWrist)
-            : null;
-          this._rigRotation(
-            vrm, "RightUpperArm",
-            direct || riggedPose.RightUpperArm,
-            1, 0.65,
-          );
-          this._rigRotation(vrm, "RightLowerArm", riggedPose.RightLowerArm, 1, 0.65);
-        } else if (this._avatar) {
-          this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
-        }
-
-        // Left arm
-        if (signerLeftArmOn) {
-          const direct = (leftWrist && leftShoulder)
-            ? this._directUpperArm("Left", leftShoulder, leftWrist)
-            : null;
-          this._rigRotation(
-            vrm, "LeftUpperArm",
-            direct || riggedPose.LeftUpperArm,
-            1, 0.65,
-          );
-          this._rigRotation(vrm, "LeftLowerArm", riggedPose.LeftLowerArm, 1, 0.65);
-        } else if (this._avatar) {
-          this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
-        }
-        // Legs intentionally NOT driven.
+        this._rigRotation(vrm, "Hips", riggedPose.Hips.rotation, 0.15, 0.12);
+        this._rigRotation(vrm, "Chest", riggedPose.Spine, 0.08, 0.12);
+        this._rigRotation(vrm, "Spine", riggedPose.Spine, 0.12, 0.12);
       }
     }
+
+    // ── Hands-first arm IK ──────────────────────────────────────────
+    // Reach each hand to the tracked wrist's screen position. Prefer the
+    // hand wrist (index 0); fall back to the pose wrist (15 = signer's
+    // left, 16 = signer's right — same anatomical sides the swap assigns)
+    // so the arm still tracks for a few frames if the fingers drop out.
+    const rightTargetScreen = rightHandLandmarks?.[0] || pose2DLandmarks?.[15];
+    const leftTargetScreen  = leftHandLandmarks?.[0]  || pose2DLandmarks?.[16];
+
+    if (this._avatar &&
+        ((signerRightArmOn && rightTargetScreen) || (signerLeftArmOn && leftTargetScreen))) {
+      this._avatar.markActive();
+    }
+
+    // Bone world matrices must be current before we read the shoulders.
+    vrm.scene.updateMatrixWorld(true);
+
+    if (signerRightArmOn && rightTargetScreen) {
+      this._solveArmIK(vrm, "Right", rightTargetScreen);
+    } else if (this._avatar) {
+      this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
+    }
+
+    if (signerLeftArmOn && leftTargetScreen) {
+      this._solveArmIK(vrm, "Left", leftTargetScreen);
+    } else if (this._avatar) {
+      this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
+    }
+    // Legs intentionally NOT driven.
 
     // Hand writes: hand-solve only, no longer mix in pose-Z.
     if (handDetected(leftHandLandmarks)) {
