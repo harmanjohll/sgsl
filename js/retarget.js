@@ -69,6 +69,10 @@ const HAND_WX = -1, HAND_WY = -1, HAND_WZ = -1;
 // rest palm axis (computed in un-reflected avatar space).
 const HAND_DET = HAND_WX * HAND_WY * HAND_WZ;
 const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
+// Blend the hand's finger axis toward the avatar's forearm direction (0 = pure
+// 3D hand orientation, 1 = wrist locked straight to the forearm). Prevents the
+// wrist hyperextending when the 2D-IK forearm and the 3D hand diverge.
+const WRIST_STRAIGHTEN = 0.6;
 
 let oldLookTarget = new THREE.Euler();
 
@@ -241,6 +245,22 @@ export class SMPLXRetarget {
     // Hand orientation (palm facing).
     const wrist = V(0);
     const fingerDir = V(9).sub(wrist).normalize();
+    // The hand orientation is absolute (from 3D landmarks) but the forearm is
+    // positioned by the 2D arm-IK; left unchecked the wrist bridges the gap and
+    // hyperextends. Blend the finger axis toward the avatar's real forearm
+    // direction (elbow→wrist) to keep the wrist natural. Palm facing + curls are
+    // preserved (palm normal is re-projected ⊥ to the blended axis).
+    const lowerArm = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    let wristBend = 0;
+    if (lowerArm) {
+      const fwd = hand.getWorldPosition(new THREE.Vector3())
+        .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
+      if (fwd.lengthSq() > 1e-9) {
+        fwd.normalize();
+        wristBend = Math.acos(clampNum(fingerDir.dot(fwd), -1, 1)) * 180 / Math.PI;
+        fingerDir.lerp(fwd, WRIST_STRAIGHTEN).normalize();
+      }
+    }
     // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),
     // with the reflection-determinant correction so it matches the rest basis.
     const palmNormal = new THREE.Vector3()
@@ -267,7 +287,7 @@ export class SMPLXRetarget {
     const tip = (a, b, c) => Math.acos(clampNum(
       V(b).sub(V(a)).normalize().dot(V(c).sub(V(b)).normalize()), -1, 1)) * 180 / Math.PI;
     const curl = (tip(5,6,8) + tip(9,10,12) + tip(13,14,16) + tip(17,18,20)) / 4;
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curl) };
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curl), bend: Math.round(wristBend) };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -382,15 +402,14 @@ export class SMPLXRetarget {
       ? this._countVisible(pose2DLandmarks) >= POSE_MIN_VISIBLE_LMS
       : false;
 
-    // Raw per-frame "arm is trustworthy" signal. Hand detection is
-    // the strong signal; wrist visibility is a fallback for the
-    // no-hand-raised case.
-    const vis = (i) => pose2DLandmarks?.[i]?.visibility ?? 0;
+    // Raw per-frame "arm is trustworthy" signal. An arm activates ONLY when its
+    // hand is actually detected (image or 3D world landmarks) — a bare pose
+    // wrist must not raise the non-signing arm. Hysteresis (below) still
+    // sustains an on-arm through brief hand dropouts.
     const handDetected = (lms) =>
       lms && this._countVisible(lms, 0) >= HAND_MIN_VISIBLE_LMS;
-    // MediaPipe pose wrist indices: 15 = signer's right, 16 = signer's left.
-    const rawRightOk = handDetected(rightHandLandmarks) || vis(15) >= WRIST_VIS_THRESH;
-    const rawLeftOk  = handDetected(leftHandLandmarks)  || vis(16) >= WRIST_VIS_THRESH;
+    const rawRightOk = handDetected(rightHandLandmarks) || (rightHandWorld?.length >= 21);
+    const rawLeftOk  = handDetected(leftHandLandmarks)  || (leftHandWorld?.length >= 21);
 
     // Hysteresis: fill the streak up to MAX when the raw signal is
     // good; decrement when it's bad. Arm is "on" whenever > 0.
@@ -466,7 +485,7 @@ export class SMPLXRetarget {
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
     const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
     const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
-    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} curl:${this._handDbg[s].curl}°` : 'face:— curl:—';
+    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} curl:${this._handDbg[s].curl}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— bend:—';
     this._lastDebug =
         `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
