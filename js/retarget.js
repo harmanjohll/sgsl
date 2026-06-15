@@ -80,6 +80,12 @@ const FLEX_GAIN = 1.0;       // scale measured flexion → bone rotation
 const MAX_FLEX = 2.0;        // clamp per joint (rad)
 const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
                                // extended finger reads as ~straight (rad)
+// Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
+// z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
+// the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
+// force the palm normal's facing to match it. WIND_SIGN pinned by the harness.
+const WIND_SIGN = -1;        // winding sign → +1 facing (palm toward camera)
+const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
 
 let oldLookTarget = new THREE.Euler();
 
@@ -94,6 +100,8 @@ export class SMPLXRetarget {
     this._leftArmStreak = 0;
     // Per-hand diagnostic (palm facing + curl), set by _driveHand.
     this._handDbg = { Right: null, Left: null };
+    // Last stable palm-facing sign per hand (for the edge-on temporal hold).
+    this._handFacing = { Right: 0, Left: 0 };
   }
   reset() {
     oldLookTarget = new THREE.Euler();
@@ -272,6 +280,16 @@ export class SMPLXRetarget {
     // with the reflection-determinant correction so it matches the rest basis.
     const palmNormal = new THREE.Vector3()
       .crossVectors(fingerDir, V(17).sub(V(5))).multiplyScalar(HAND_DET).normalize();
+
+    // Stabilise palm-vs-back against MediaPipe's depth flip using the 2D knuckle
+    // winding (world x/y don't flip with depth). Normalised so |wind| ∈ [0,1].
+    const a = V(5).sub(V(0)), b = V(17).sub(V(0));
+    const windRaw = a.x * b.y - a.y * b.x;
+    const wind = windRaw / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) + 1e-9);
+    if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN;
+    const desired = this._handFacing[side];
+    if (desired !== 0 && Math.sign(palmNormal.z || 0) !== desired) palmNormal.negate();
+
     this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
     hand.updateWorldMatrix(true, true);
 
@@ -309,7 +327,7 @@ export class SMPLXRetarget {
 
     // Diagnostic: palm facing (+1 = toward camera) + mean finger flexion (deg).
     const curlDeg = curlN ? (curlSum / curlN) * 180 / Math.PI : 0;
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curlDeg), bend: Math.round(wristBend) };
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curlDeg), bend: Math.round(wristBend), wind: +wind.toFixed(2) };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -511,7 +529,7 @@ export class SMPLXRetarget {
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
     const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
     const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
-    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} curl:${this._handDbg[s].curl}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— bend:—';
+    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— bend:—';
     this._lastDebug =
         `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
