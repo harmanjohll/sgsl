@@ -84,7 +84,11 @@ const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
 // force the palm normal's facing to match it. WIND_SIGN pinned by the harness.
-const WIND_SIGN = -1;        // winding sign → +1 facing (palm toward camera)
+const WIND_SIGN = 1;         // winding sign → facing (pinned by LIVE data: the
+                            // user's palm-to-camera must give the avatar palm to
+                            // us; my synthetic hand's chirality is the opposite
+                            // of real MediaPipe, so the harness only checks the
+                            // MECHANISM — flip-robustness + no pinch — not this sign)
 const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
 
 let oldLookTarget = new THREE.Euler();
