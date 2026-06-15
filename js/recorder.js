@@ -25,6 +25,16 @@ let avatar = null;
 let retarget = null;
 let holisticModel = null;
 let camera = null;
+// MediaPipe Tasks HandLandmarker — true 3D (metric) world landmarks for the
+// hands, fused into the Holistic results each frame. Holistic still drives
+// pose + face. Loaded lazily; hands fall back to Holistic if it fails.
+let handLandmarker = null;
+let lastHandResult = null;
+const HAND_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+// Flip if the live diagnostic shows the hands reversed (MediaPipe handedness
+// assumes a mirrored selfie image; our input to the model is raw).
+const SWAP_HANDEDNESS = false;
 let recording = false;
 let frames = [];
 let startTime = 0;          // performance.now() at record start
@@ -118,11 +128,18 @@ async function setupMediaPipe() {
     minTrackingConfidence: 0.5,
   });
   holisticModel.onResults(onHolisticResults);
+  loadHandLandmarker(); // fire-and-forget; onFrame guards on readiness
 
   try {
     // @ts-ignore — loaded via CDN
     camera = new window.Camera(videoEl, {
-      onFrame: async () => { if (holisticModel) await holisticModel.send({ image: videoEl }); },
+      onFrame: async () => {
+        if (handLandmarker && videoEl.readyState >= 2) {
+          try { lastHandResult = handLandmarker.detectForVideo(videoEl, performance.now()); }
+          catch (e) { /* transient — keep last result */ }
+        }
+        if (holisticModel) await holisticModel.send({ image: videoEl });
+      },
       width: 640,
       height: 480,
     });
@@ -134,8 +151,45 @@ async function setupMediaPipe() {
   }
 }
 
+// Load the Tasks HandLandmarker (reuses the legacy/js/tracker.js pattern).
+async function loadHandLandmarker() {
+  try {
+    const vision = await import(`${HAND_CDN}/vision_bundle.mjs`);
+    const fileset = await vision.FilesetResolver.forVisionTasks(`${HAND_CDN}/wasm`);
+    const opts = (delegate) => ({
+      baseOptions: { modelAssetPath: HAND_MODEL, delegate },
+      runningMode: 'VIDEO', numHands: 2,
+      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+    });
+    try { handLandmarker = await vision.HandLandmarker.createFromOptions(fileset, opts('GPU')); }
+    catch { handLandmarker = await vision.HandLandmarker.createFromOptions(fileset, opts('CPU')); }
+    console.log('[Recorder] HandLandmarker ready (3D hands)');
+  } catch (e) {
+    console.warn('[Recorder] HandLandmarker failed; hands fall back to Holistic:', e);
+  }
+}
+
+// Fuse HandLandmarker output into the Holistic results object: route each hand
+// to a signer side by handedness, providing both image landmarks (arm target +
+// gating) and 3D world landmarks (palm/curl). Overrides Holistic's weaker hands;
+// if HandLandmarker has no detection this frame, Holistic's hands remain.
+function mergeHandLandmarker(results, hr) {
+  if (!hr || !hr.landmarks || !hr.landmarks.length) return;
+  for (let i = 0; i < hr.landmarks.length; i++) {
+    let side = hr.handedness?.[i]?.[0]?.categoryName || (i === 0 ? 'Right' : 'Left');
+    if (SWAP_HANDEDNESS) side = side === 'Right' ? 'Left' : 'Right';
+    const lm = hr.landmarks[i];
+    const world = hr.worldLandmarks?.[i] || null;
+    if (side === 'Right') { results.rightHandLandmarks = lm; results.rightHandWorldLandmarks = world; }
+    else { results.leftHandLandmarks = lm; results.leftHandWorldLandmarks = world; }
+  }
+}
+
 // ─── MediaPipe Results Handler ──────────────────────────────
 function onHolisticResults(results) {
+  // 0) Fuse in the dedicated 3D hand landmarks before anything reads hands.
+  mergeHandLandmarker(results, lastHandResult);
+
   // 1) Evaluate framing (needed by overlay + by gate).
   latestFraming = framingScore(results.poseLandmarks);
   updateFramingGate(latestFraming);
@@ -175,6 +229,13 @@ function extractFrame(results) {
   }
   if (results.leftHandLandmarks) {
     frame.leftHand = results.leftHandLandmarks.map(lm => [lm.x, lm.y, lm.z]);
+  }
+  // 3D world hand landmarks (HandLandmarker) — drive palm facing + curl on replay.
+  if (results.rightHandWorldLandmarks) {
+    frame.rightHandWorld = results.rightHandWorldLandmarks.map(lm => [lm.x, lm.y, lm.z]);
+  }
+  if (results.leftHandWorldLandmarks) {
+    frame.leftHandWorld = results.leftHandWorldLandmarks.map(lm => [lm.x, lm.y, lm.z]);
   }
   if (results.poseLandmarks) {
     frame.pose = results.poseLandmarks.map(lm => [lm.x, lm.y, lm.z, lm.visibility ?? 0]);

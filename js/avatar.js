@@ -103,6 +103,7 @@ export class SMPLXAvatar {
           this._setRestPose(vrm);
           this._snapshotRestTargets(vrm);
           this._measureArmRig(vrm);
+          this._measureHandRig(vrm);
 
           if (this._statusEl) { this._statusEl.remove(); this._statusEl = null; }
           this.loaded = true;
@@ -177,6 +178,45 @@ export class SMPLXAvatar {
         upperRestAxis: upperVec.clone().normalize(),
         lowerRestAxis: lowerVec.clone().normalize(),
       };
+    }
+  }
+
+  /**
+   * Measure the hand + finger rest axes (bind pose) for the 3D hand driver in
+   * retarget.js. All are fixed bind offsets (local child positions), so they're
+   * constants. Per side:
+   *   - fingerAxis: Hand-local dir toward the middle-finger knuckle
+   *   - palmAxis  : Hand-local palm normal (finger × across-knuckles)
+   *   - fingers[name] = [proxAxis, interAxis, distAxis]: each bone's local dir
+   *     toward its child (Distal reuses Intermediate's, as the tip has no bone)
+   */
+  _measureHandRig(vrm) {
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const node = (n) => vrm.humanoid.getBoneNode(BN[n]);
+    this.handRig = {};
+    for (const side of ['Right', 'Left']) {
+      const hand = node(`${side}Hand`);
+      const midProx = node(`${side}MiddleProximal`);
+      if (!hand || !midProx) continue;
+      const fingerAxis = midProx.position.clone().normalize();
+      let palmAxis = new THREE.Vector3(0, 0, 1);
+      const idxProx = node(`${side}IndexProximal`);
+      const litProx = node(`${side}LittleProximal`);
+      if (idxProx && litProx) {
+        const across = litProx.position.clone().sub(idxProx.position).normalize();
+        palmAxis = new THREE.Vector3().crossVectors(fingerAxis, across).normalize();
+      }
+      const fingers = {};
+      for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+        const prox = node(`${side}${f}Proximal`);
+        if (!prox) continue;
+        const inter = node(`${side}${f}Intermediate`);
+        const dist = node(`${side}${f}Distal`);
+        const a0 = inter ? inter.position.clone().normalize() : new THREE.Vector3(0, 1, 0);
+        const a1 = dist ? dist.position.clone().normalize() : a0.clone();
+        fingers[f] = [a0, a1, a1.clone()]; // Distal reuses Intermediate's local forward
+      }
+      this.handRig[side] = { fingerAxis, palmAxis, fingers };
     }
   }
 

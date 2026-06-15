@@ -59,6 +59,17 @@ const BOX_H = 3.0;           // signing-box height in shoulder-widths
 const ARM_IK_LERP = 0.45;    // per-frame slerp toward the IK solution
 const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+// ── 3D hand driving (MediaPipe Tasks HandLandmarker world landmarks) ──
+// Map MP world-landmark axes → avatar-world axes. The same mapping drives both
+// palm orientation and per-finger aim. Signs pinned by the harness + live test:
+// x mirrored (reflection), y up (MP y is down), z toward the camera.
+const HAND_WX = -1, HAND_WY = -1, HAND_WZ = -1;
+// The axis map is a reflection (det = product of signs); a cross product (the
+// palm normal) flips sign under reflection, so correct it back to match the
+// rest palm axis (computed in un-reflected avatar space).
+const HAND_DET = HAND_WX * HAND_WY * HAND_WZ;
+const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
+
 let oldLookTarget = new THREE.Euler();
 
 export class SMPLXRetarget {
@@ -70,6 +81,8 @@ export class SMPLXRetarget {
     // Hysteresis counters per arm. Treated as "arm is on" whenever > 0.
     this._rightArmStreak = 0;
     this._leftArmStreak = 0;
+    // Per-hand diagnostic (palm facing + curl), set by _driveHand.
+    this._handDbg = { Right: null, Left: null };
   }
   reset() {
     oldLookTarget = new THREE.Euler();
@@ -188,6 +201,75 @@ export class SMPLXRetarget {
     bone.quaternion.slerp(q, lerpAmount);
   }
 
+  /** Orthonormal-basis quaternion: Y = finger axis, Z = palm normal, X = Y×Z. */
+  _basisQuat(fingerAxis, palmAxis) {
+    const Y = fingerAxis.clone().normalize();
+    const X = new THREE.Vector3().crossVectors(Y, palmAxis).normalize();
+    const Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+    const m = new THREE.Matrix4().makeBasis(X, Y, Z);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  }
+
+  /** Orient the Hand bone so its rest (finger,palm) basis maps to the desired
+   *  WORLD (finger,palm) basis — i.e. palm faces where the real palm faces. */
+  _orientHand(bone, restFinger, restPalm, worldFinger, worldPalm, lerp = HAND_LERP) {
+    if (!bone || !bone.parent) return;
+    if (worldFinger.lengthSq() < 1e-9 || worldPalm.lengthSq() < 1e-9) return;
+    const inv = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const tFinger = worldFinger.clone().applyQuaternion(inv);
+    const tPalm = worldPalm.clone().applyQuaternion(inv);
+    const qRest = this._basisQuat(restFinger, restPalm);
+    const qTarget = this._basisQuat(tFinger, tPalm);
+    const local = qTarget.multiply(qRest.invert());
+    bone.quaternion.slerp(local, lerp);
+  }
+
+  /**
+   * Drive a hand from MediaPipe HandLandmarker 3D WORLD landmarks (21 pts,
+   * metric). Palm facing comes from the finger-direction + palm-normal basis;
+   * each finger bone is aimed along its world-landmark segment, so curl + splay
+   * reproduce at full magnitude. `world` is an array of {x,y,z} (MP-world).
+   */
+  _driveHand(vrm, side, world) {
+    const rig = this._avatar?.handRig?.[side];
+    if (!rig || !world || world.length < 21) return;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const hand = vrm.humanoid.getBoneNode(BN[`${side}Hand`]);
+    if (!hand) return;
+    const V = (i) => new THREE.Vector3(world[i].x * HAND_WX, world[i].y * HAND_WY, world[i].z * HAND_WZ);
+
+    // Hand orientation (palm facing).
+    const wrist = V(0);
+    const fingerDir = V(9).sub(wrist).normalize();
+    // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),
+    // with the reflection-determinant correction so it matches the rest basis.
+    const palmNormal = new THREE.Vector3()
+      .crossVectors(fingerDir, V(17).sub(V(5))).multiplyScalar(HAND_DET).normalize();
+    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
+    hand.updateWorldMatrix(true, true);
+
+    // Fingers: aim each segment along its world-landmark direction.
+    const SEG = { Thumb: [1,2,3,4], Index: [5,6,7,8], Middle: [9,10,11,12], Ring: [13,14,15,16], Little: [17,18,19,20] };
+    const segNames = ['Proximal', 'Intermediate', 'Distal'];
+    for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+      const axes = rig.fingers[f];
+      if (!axes) continue;
+      const j = SEG[f];
+      for (let i = 0; i < 3; i++) {
+        const bone = vrm.humanoid.getBoneNode(BN[`${side}${f}${segNames[i]}`]);
+        if (!bone || !axes[i]) continue;
+        this._aimBone(bone, axes[i], V(j[i + 1]).sub(V(j[i])), HAND_LERP);
+        bone.updateWorldMatrix(true, true);
+      }
+    }
+
+    // Diagnostic: palm facing (+1 = toward camera) + mean finger curl (deg).
+    const tip = (a, b, c) => Math.acos(clampNum(
+      V(b).sub(V(a)).normalize().dot(V(c).sub(V(b)).normalize()), -1, 1)) * 180 / Math.PI;
+    const curl = (tip(5,6,8) + tip(9,10,12) + tip(13,14,16) + tip(17,18,20)) / 4;
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curl) };
+  }
+
   /** User body anchor (image space) for framing-invariant wrist mapping:
    *  prefer the shoulder midpoint + shoulder width; fall back to the nose. */
   _bodyAnchor(pose2D) {
@@ -281,6 +363,9 @@ export class SMPLXRetarget {
     // demo swaps so "Left" refers to the signer's own left hand.
     const leftHandLandmarks = results.rightHandLandmarks;
     const rightHandLandmarks = results.leftHandLandmarks;
+    // 3D world landmarks (HandLandmarker), routed to the same signer sides.
+    const leftHandWorld = results.rightHandWorldLandmarks;
+    const rightHandWorld = results.leftHandWorldLandmarks;
 
     const solveOpts = this._video
       ? { runtime: "mediapipe", video: this._video }
@@ -360,28 +445,33 @@ export class SMPLXRetarget {
     }
     // Legs intentionally NOT driven.
 
-    // Hand writes: hand-solve only, no longer mix in pose-Z.
-    if (handDetected(leftHandLandmarks)) {
-      riggedLeftHand = Kalidokit.Hand.solve(leftHandLandmarks, "Left");
-      this._writeHand(vrm, "Left", riggedLeftHand);
+    // Hands: prefer 3D world landmarks (HandLandmarker); fall back to Kalidokit.
+    this._handDbg.Left = null; this._handDbg.Right = null;
+    if (rightHandWorld && rightHandWorld.length >= 21) {
+      this._driveHand(vrm, "Right", rightHandWorld); riggedRightHand = true;
+    } else if (handDetected(rightHandLandmarks)) {
+      this._writeHand(vrm, "Right", Kalidokit.Hand.solve(rightHandLandmarks, "Right"));
+      riggedRightHand = true;
     }
-
-    if (handDetected(rightHandLandmarks)) {
-      riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
-      this._writeHand(vrm, "Right", riggedRightHand);
+    if (leftHandWorld && leftHandWorld.length >= 21) {
+      this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
+    } else if (handDetected(leftHandLandmarks)) {
+      this._writeHand(vrm, "Left", Kalidokit.Hand.solve(leftHandLandmarks, "Left"));
+      riggedLeftHand = true;
     }
 
     // Live diagnostic (read by recorder.js → #rec-debug). Every frame, so a
-    // screenshot is current. Reports each AVATAR arm's on/off, target source,
-    // and target screen coords — maps any failure to a concrete cause.
+    // screenshot is current. Per AVATAR side: arm on/off + target, hand source,
+    // palm facing (+1 = palm to camera) and mean finger curl (deg).
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
-    const lSrc = leftHandLandmarks?.[0] ? 'hand' : (pose2DLandmarks?.[16] ? 'pose' : 'none');
-    const rSrc = rightHandLandmarks?.[0] ? 'hand' : (pose2DLandmarks?.[15] ? 'pose' : 'none');
+    const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
+    const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
+    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} curl:${this._handDbg[s].curl}°` : 'face:— curl:—';
     this._lastDebug =
         `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
-      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'yes' : 'no'}  signer-L:${results.leftHandLandmarks ? 'yes' : 'no'}`
-      + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'}  src:${lSrc}  tgt:${fmt(leftTargetScreen)}  streak ${this._leftArmStreak}`
-      + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'}  src:${rSrc}  tgt:${fmt(rightTargetScreen)}  streak ${this._rightArmStreak}`;
+      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
+      + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
+      + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'} tgt:${fmt(rightTargetScreen)} | hand:${rSrc} ${hd('Right')}`;
 
     return { hasPose: !!riggedPose, hasLeft: !!riggedLeftHand, hasRight: !!riggedRightHand };
   }
