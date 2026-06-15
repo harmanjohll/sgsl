@@ -182,17 +182,20 @@ export class SMPLXAvatar {
   }
 
   /**
-   * Measure the hand + finger rest axes (bind pose) for the 3D hand driver in
-   * retarget.js. All are fixed bind offsets (local child positions), so they're
-   * constants. Per side:
-   *   - fingerAxis: Hand-local dir toward the middle-finger knuckle
-   *   - palmAxis  : Hand-local palm normal (finger × across-knuckles)
-   *   - fingers[name] = [proxAxis, interAxis, distAxis]: each bone's local dir
-   *     toward its child (Distal reuses Intermediate's, as the tip has no bone)
+   * Measure the hand + finger rig (bind pose) for the 3D hand driver. Per side:
+   *   - fingerAxis: Hand-local dir toward the middle-finger knuckle  (hand aim)
+   *   - palmAxis  : Hand-local palm normal (finger × across-knuckles) (hand aim)
+   *   - fingers[name] = [bone0, bone1, bone2], each:
+   *       { restQ:  the bone's local rotation at rest,
+   *         flex:   LOCAL flexion axis — rotating about it curls the bone toward
+   *                 the palm. Derived as cross(bone-forward, palm-normal) in
+   *                 world, mapped to bone-local. This drives curl by ANGLE
+   *                 (rotation-invariant, no twist), decoupled from hand orient. }
    */
   _measureHandRig(vrm) {
     const BN = THREE.VRMSchema.HumanoidBoneName;
     const node = (n) => vrm.humanoid.getBoneNode(BN[n]);
+    vrm.scene.updateMatrixWorld(true);
     this.handRig = {};
     for (const side of ['Right', 'Left']) {
       const hand = node(`${side}Hand`);
@@ -206,17 +209,50 @@ export class SMPLXAvatar {
         const across = litProx.position.clone().sub(idxProx.position).normalize();
         palmAxis = new THREE.Vector3().crossVectors(fingerAxis, across).normalize();
       }
+      // Palm normal in WORLD at rest — defines the curl plane for every finger.
+      const handWQ = hand.getWorldQuaternion(new THREE.Quaternion());
+      const palmWorld = palmAxis.clone().applyQuaternion(handWQ).normalize();
+
       const fingers = {};
       for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
-        const prox = node(`${side}${f}Proximal`);
-        if (!prox) continue;
-        const inter = node(`${side}${f}Intermediate`);
-        const dist = node(`${side}${f}Distal`);
-        const a0 = inter ? inter.position.clone().normalize() : new THREE.Vector3(0, 1, 0);
-        const a1 = dist ? dist.position.clone().normalize() : a0.clone();
-        fingers[f] = [a0, a1, a1.clone()]; // Distal reuses Intermediate's local forward
+        const bones = [node(`${side}${f}Proximal`), node(`${side}${f}Intermediate`), node(`${side}${f}Distal`)];
+        if (!bones[0]) continue;
+        const arr = [];
+        for (let i = 0; i < 3; i++) {
+          const b = bones[i];
+          if (!b) { arr.push(null); continue; }
+          // bone forward = dir to child (or, for the tip, reuse the parent's).
+          const child = bones[i + 1];
+          const fwdLocal = child ? child.position.clone().normalize()
+            : (arr[i - 1]?.fwdLocal?.clone() || new THREE.Vector3(0, 1, 0));
+          const bq = b.getWorldQuaternion(new THREE.Quaternion());
+          const fwdWorld = fwdLocal.clone().applyQuaternion(bq).normalize();
+          let flexWorld = new THREE.Vector3().crossVectors(fwdWorld, palmWorld);
+          if (flexWorld.lengthSq() < 1e-9) flexWorld = new THREE.Vector3(1, 0, 0);
+          flexWorld.normalize();
+          const flex = flexWorld.applyQuaternion(bq.clone().invert()).normalize();
+          arr.push({ restQ: b.quaternion.clone(), flex, fwdLocal });
+        }
+        fingers[f] = arr;
       }
       this.handRig[side] = { fingerAxis, palmAxis, fingers };
+    }
+  }
+
+  /** Slerp a side's finger bones back to their rest pose (hand not tracked). */
+  restFingers(side, lerp = 0.3) {
+    const rig = this.handRig?.[side];
+    if (!rig || !this.vrm) return;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+      const arr = rig.fingers[f];
+      if (!arr) continue;
+      const names = ['Proximal', 'Intermediate', 'Distal'];
+      for (let i = 0; i < 3; i++) {
+        if (!arr[i]) continue;
+        const b = this.vrm.humanoid.getBoneNode(BN[`${side}${f}${names[i]}`]);
+        if (b) b.quaternion.slerp(arr[i].restQ, lerp);
+      }
     }
   }
 
