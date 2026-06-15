@@ -73,6 +73,13 @@ const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
 // 3D hand orientation, 1 = wrist locked straight to the forearm). Prevents the
 // wrist hyperextending when the 2D-IK forearm and the 3D hand diverge.
 const WRIST_STRAIGHTEN = 0.6;
+// Finger curl by per-joint FLEXION ANGLE about each bone's local curl axis
+// (rotation-invariant → no twist, independent of hand orientation).
+const FLEX_SIGN = -1;         // +1/−1 = curl toward palm (pinned by harness)
+const FLEX_GAIN = 1.0;       // scale measured flexion → bone rotation
+const MAX_FLEX = 2.0;        // clamp per joint (rad)
+const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
+                               // extended finger reads as ~straight (rad)
 
 let oldLookTarget = new THREE.Euler();
 
@@ -268,26 +275,41 @@ export class SMPLXRetarget {
     this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
     hand.updateWorldMatrix(true, true);
 
-    // Fingers: aim each segment along its world-landmark direction.
-    const SEG = { Thumb: [1,2,3,4], Index: [5,6,7,8], Middle: [9,10,11,12], Ring: [13,14,15,16], Little: [17,18,19,20] };
+    // Fingers: per-joint FLEXION ANGLES applied about each bone's local curl
+    // axis. Angles are computed from raw landmarks (invariant to the mapping)
+    // and are rotation-invariant → no twist, decoupled from hand orientation,
+    // so they follow the (straightened) wrist naturally.
     const segNames = ['Proximal', 'Intermediate', 'Distal'];
+    const SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,12], Ring: [0,13,14,15,16], Little: [0,17,18,19,20] };
+    const P = (i) => new THREE.Vector3(world[i].x, world[i].y, world[i].z);
+    const jointAngle = (a, b, c) => {
+      const u = P(b).sub(P(a)), v = P(c).sub(P(b));
+      if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
+      return Math.acos(clampNum(u.normalize().dot(v.normalize()), -1, 1));
+    };
+    let curlSum = 0, curlN = 0;
     for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
-      const axes = rig.fingers[f];
-      if (!axes) continue;
-      const j = SEG[f];
+      const arr = rig.fingers[f];
+      if (!arr) continue;
+      const k = SEG[f]; // [wrist, mcp, pip, dip, tip]
+      const ang = [jointAngle(k[0], k[1], k[2]), jointAngle(k[1], k[2], k[3]), jointAngle(k[2], k[3], k[4])];
       for (let i = 0; i < 3; i++) {
+        const fr = arr[i];
+        if (!fr) continue;
         const bone = vrm.humanoid.getBoneNode(BN[`${side}${f}${segNames[i]}`]);
-        if (!bone || !axes[i]) continue;
-        this._aimBone(bone, axes[i], V(j[i + 1]).sub(V(j[i])), HAND_LERP);
-        bone.updateWorldMatrix(true, true);
+        if (!bone) continue;
+        let a = ang[i];
+        if (i === 0) a = a - PROX_FLEX_OFFSET; // strip the natural metacarpal bend
+        a = clampNum(a * FLEX_GAIN, 0, MAX_FLEX);
+        const delta = new THREE.Quaternion().setFromAxisAngle(fr.flex, FLEX_SIGN * a);
+        bone.quaternion.slerp(fr.restQ.clone().multiply(delta), HAND_LERP);
+        if (f !== 'Thumb') { curlSum += a; curlN++; }
       }
     }
 
-    // Diagnostic: palm facing (+1 = toward camera) + mean finger curl (deg).
-    const tip = (a, b, c) => Math.acos(clampNum(
-      V(b).sub(V(a)).normalize().dot(V(c).sub(V(b)).normalize()), -1, 1)) * 180 / Math.PI;
-    const curl = (tip(5,6,8) + tip(9,10,12) + tip(13,14,16) + tip(17,18,20)) / 4;
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curl), bend: Math.round(wristBend) };
+    // Diagnostic: palm facing (+1 = toward camera) + mean finger flexion (deg).
+    const curlDeg = curlN ? (curlSum / curlN) * 180 / Math.PI : 0;
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curlDeg), bend: Math.round(wristBend) };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -471,12 +493,16 @@ export class SMPLXRetarget {
     } else if (handDetected(rightHandLandmarks)) {
       this._writeHand(vrm, "Right", Kalidokit.Hand.solve(rightHandLandmarks, "Right"));
       riggedRightHand = true;
+    } else if (this._avatar) {
+      this._avatar.restFingers("Right", 0.25); // no hand → fingers relax to rest
     }
     if (leftHandWorld && leftHandWorld.length >= 21) {
       this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
     } else if (handDetected(leftHandLandmarks)) {
       this._writeHand(vrm, "Left", Kalidokit.Hand.solve(leftHandLandmarks, "Left"));
       riggedLeftHand = true;
+    } else if (this._avatar) {
+      this._avatar.restFingers("Left", 0.25);
     }
 
     // Live diagnostic (read by recorder.js → #rec-debug). Every frame, so a
