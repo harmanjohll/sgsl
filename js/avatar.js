@@ -102,6 +102,7 @@ export class SMPLXAvatar {
 
           this._setRestPose(vrm);
           this._snapshotRestTargets(vrm);
+          this._measureArmRig(vrm);
 
           if (this._statusEl) { this._statusEl.remove(); this._statusEl = null; }
           this.loaded = true;
@@ -145,6 +146,37 @@ export class SMPLXAvatar {
     for (const b of bones) {
       const node = vrm.humanoid.getBoneNode(b);
       if (node) this._restTargets[b] = node.quaternion.clone();
+    }
+  }
+
+  /**
+   * Measure the arm rig once, at bind/rest, for the hands-first IK in
+   * retarget.js. Bone local positions are fixed bind offsets (they don't
+   * change with rotation), so L1/L2 and the rest axes are constants:
+   *   - L1 = shoulder→elbow length, L2 = elbow→wrist length
+   *   - upperRestAxis = local dir UpperArm→LowerArm (in UpperArm's frame)
+   *   - lowerRestAxis = local dir LowerArm→Hand   (in LowerArm's frame)
+   */
+  _measureArmRig(vrm) {
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const sides = {
+      Right: [BN.RightLowerArm, BN.RightHand],
+      Left:  [BN.LeftLowerArm,  BN.LeftHand],
+    };
+    this.armRig = {};
+    for (const side of ['Right', 'Left']) {
+      const [laName, haName] = sides[side];
+      const la = vrm.humanoid.getBoneNode(laName);
+      const ha = vrm.humanoid.getBoneNode(haName);
+      if (!la || !ha) continue;
+      const upperVec = la.position.clone();   // elbow offset in UpperArm local space
+      const lowerVec = ha.position.clone();    // wrist offset in LowerArm local space
+      this.armRig[side] = {
+        L1: upperVec.length() || 1e-4,
+        L2: lowerVec.length() || 1e-4,
+        upperRestAxis: upperVec.clone().normalize(),
+        lowerRestAxis: lowerVec.clone().normalize(),
+      };
     }
   }
 
