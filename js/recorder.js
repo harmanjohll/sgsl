@@ -34,6 +34,10 @@ let lastFidelity = null;
 let fidelityTolerance = 8;   // % of shoulder-width; the "margin of error"
 let inited = false;
 
+// Temporary live IK diagnostic (set false to hide). Draws a ring on each
+// hand showing which avatar arm it drives and whether that arm is "on".
+const DEBUG_OVERLAY = true;
+
 // Framing gate state.
 let framingOk = false;
 let framingStreak = 0;       // consecutive frames in the target box
@@ -362,6 +366,35 @@ function drawOverlay(results, fr) {
         ctx.stroke();
       }
     }
+  }
+
+  // ── Temporary IK diagnostic: ring each arm's target, colored by on/off. ──
+  if (DEBUG_OVERLAY) {
+    const W = canvas.width, H = canvas.height;
+    const pl = results.poseLandmarks;
+    // Reflection routing (see retarget.js): the signer's RIGHT hand (green)
+    // drives the avatar's LEFT arm; the signer's LEFT hand (orange) drives the
+    // avatar's RIGHT arm. Pose-wrist fallbacks: 16 → avatar-left, 15 → -right.
+    const lTgt = results.rightHandLandmarks?.[0] || pl?.[16];
+    const rTgt = results.leftHandLandmarks?.[0]  || pl?.[15];
+    const lOn = (retarget?._leftArmStreak  ?? 0) > 0;
+    const rOn = (retarget?._rightArmStreak ?? 0) > 0;
+    // Counter-flip text so it reads correctly on the scaleX(-1) canvas.
+    const label = (cx, cy, s, color) => {
+      ctx.save(); ctx.translate(cx, cy); ctx.scale(-1, 1);
+      ctx.fillStyle = color; ctx.font = 'bold 13px Inter, sans-serif'; ctx.textBaseline = 'middle';
+      ctx.fillText(s, 18, 0); ctx.restore();
+    };
+    const ring = (lm, text, on) => {
+      if (!lm) return;
+      const x = lm.x * W, y = lm.y * H;
+      const col = on ? 'rgba(60, 230, 120, 0.95)' : 'rgba(165, 165, 190, 0.85)';
+      ctx.lineWidth = 3; ctx.strokeStyle = col;
+      ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke();
+      label(x, y, text, col);
+    };
+    ring(lTgt, `${lOn ? 'ON' : 'off'} → avatar LEFT`, lOn);
+    ring(rTgt, `${rOn ? 'ON' : 'off'} → avatar RIGHT`, rOn);
   }
 
   if (recording) {

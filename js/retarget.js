@@ -250,15 +250,6 @@ export class SMPLXRetarget {
       : { runtime: "mediapipe" };
 
     this._dc++;
-    if (this._dc % 30 === 0) {
-      this._lastDebug = `Frame: ${this._dc}`
-        + `\npose3D: ${pose3DLandmarks ? pose3DLandmarks.length + ' lm' : 'NULL'}`
-        + `\npose2D: ${pose2DLandmarks ? pose2DLandmarks.length + ' lm' : 'NULL'}`
-        + `\nface: ${faceLandmarks ? faceLandmarks.length + ' lm' : 'NULL'}`
-        + `\nrightHand(MP): ${rightHandLandmarks ? 'yes' : 'no'}`
-        + `\nleftHand(MP): ${leftHandLandmarks ? 'yes' : 'no'}`
-        + `\narmStreak: R=${this._rightArmStreak} L=${this._leftArmStreak}`;
-    }
 
     if (faceLandmarks && faceLandmarks.length >= 468) {
       riggedFace = Kalidokit.Face.solve(faceLandmarks, solveOpts);
@@ -339,6 +330,18 @@ export class SMPLXRetarget {
       riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
       this._writeHand(vrm, "Right", riggedRightHand);
     }
+
+    // Live diagnostic (read by recorder.js → #rec-debug). Every frame, so a
+    // screenshot is current. Reports each AVATAR arm's on/off, target source,
+    // and target screen coords — maps any failure to a concrete cause.
+    const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
+    const lSrc = leftHandLandmarks?.[0] ? 'hand' : (pose2DLandmarks?.[16] ? 'pose' : 'none');
+    const rSrc = rightHandLandmarks?.[0] ? 'hand' : (pose2DLandmarks?.[15] ? 'pose' : 'none');
+    this._lastDebug =
+        `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
+      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'yes' : 'no'}  signer-L:${results.leftHandLandmarks ? 'yes' : 'no'}`
+      + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'}  src:${lSrc}  tgt:${fmt(leftTargetScreen)}  streak ${this._leftArmStreak}`
+      + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'}  src:${rSrc}  tgt:${fmt(rightTargetScreen)}  streak ${this._rightArmStreak}`;
 
     return { hasPose: !!riggedPose, hasLeft: !!riggedLeftHand, hasRight: !!riggedRightHand };
   }
