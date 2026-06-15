@@ -44,11 +44,18 @@ const ARM_HYSTERESIS_FRAMES = 5;
 // shoulder width, then 2-bone-IK the arm to reach it. The avatar's real
 // shoulder anchors the solve, so no monocular arm-depth guessing is done.
 // MIRROR_X / FRONT_Z signs are pinned by tools/ik_harness.mjs.
-const MIRROR_X = 1;          // screen-x → world-x direction (reflection mirror)
+//
+// Primary mapping is BODY-RELATIVE: the wrist is measured relative to the
+// user's own shoulders (in shoulder-width units), so it's invariant to how
+// the user is framed/zoomed. This is what makes a hand raised above the
+// shoulders read as "raised" even when the shoulders sit low in the frame.
+const MIRROR_X = -1;         // screen-x → world-x direction (reflection mirror)
 const FRONT_Z = 1;           // +1 = signing plane sits toward the camera
+const REACH_GAIN = 1.15;     // user shoulder-widths → avatar shoulder-widths
+const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
+// Absolute fallback (only when the user's shoulders/nose aren't detected):
 const BOX_W = 2.4;           // signing-box width  in shoulder-widths
 const BOX_H = 3.0;           // signing-box height in shoulder-widths
-const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
 const ARM_IK_LERP = 0.45;    // per-frame slerp toward the IK solution
 const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -181,13 +188,29 @@ export class SMPLXRetarget {
     bone.quaternion.slerp(q, lerpAmount);
   }
 
+  /** User body anchor (image space) for framing-invariant wrist mapping:
+   *  prefer the shoulder midpoint + shoulder width; fall back to the nose. */
+  _bodyAnchor(pose2D) {
+    const L = pose2D?.[11], R = pose2D?.[12];
+    if (L && R && (L.visibility ?? 1) > 0.3 && (R.visibility ?? 1) > 0.3) {
+      return {
+        x: (L.x + R.x) / 2,
+        y: (L.y + R.y) / 2,
+        scale: Math.hypot(L.x - R.x, L.y - R.y) || 0.2,
+      };
+    }
+    const nose = pose2D?.[0];
+    if (nose) return { x: nose.x, y: nose.y + 0.18, scale: 0.22 };
+    return null;
+  }
+
   /**
    * Hands-first 2-bone IK: reach `side`'s hand to the tracked wrist's screen
    * position. Uses ONLY reliable signals — the 2D wrist (x,y in [0..1]) and
    * the avatar's own shoulder world position — never a guessed arm depth.
    * `screen` is any landmark with {x,y}: the hand's wrist, or a pose wrist.
    */
-  _solveArmIK(vrm, side, screen) {
+  _solveArmIK(vrm, side, screen, anchor) {
     const rig = this._avatar?.armRig?.[side];
     if (!rig || !screen) return false;
     const BN = THREE.VRMSchema.HumanoidBoneName;
@@ -195,18 +218,32 @@ export class SMPLXRetarget {
     const la = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
     if (!ua || !la) return false;
 
-    // Shoulder anchors + signing-box size from the avatar's current pose.
+    // Avatar shoulder anchors + width from its current pose.
     const Rs = vrm.humanoid.getBoneNode(BN.RightUpperArm).getWorldPosition(new THREE.Vector3());
     const Ls = vrm.humanoid.getBoneNode(BN.LeftUpperArm).getWorldPosition(new THREE.Vector3());
     const mid = Rs.clone().add(Ls).multiplyScalar(0.5);
-    const shoulderW = Rs.distanceTo(Ls) || 0.25;
+    const avShoulderW = Rs.distanceTo(Ls) || 0.25;
 
-    // Screen → world target. Image y is down, so invert for world up.
-    const T = new THREE.Vector3(
-      mid.x + (0.5 - screen.x) * shoulderW * BOX_W * MIRROR_X,
-      mid.y + (0.5 - screen.y) * shoulderW * BOX_H,
-      mid.z + shoulderW * BOX_DEPTH * FRONT_Z,
-    );
+    let T;
+    if (anchor) {
+      // BODY-RELATIVE: wrist position relative to the user's shoulders, in
+      // shoulder-width units → same offset (scaled) from the avatar's
+      // shoulders. Framing-invariant. Image y is down, so invert for world up.
+      const relX = (screen.x - anchor.x) / anchor.scale;
+      const relY = (screen.y - anchor.y) / anchor.scale;
+      T = new THREE.Vector3(
+        mid.x + relX * avShoulderW * REACH_GAIN * MIRROR_X,
+        mid.y - relY * avShoulderW * REACH_GAIN,
+        mid.z + avShoulderW * BOX_DEPTH * FRONT_Z,
+      );
+    } else {
+      // Absolute fallback (no shoulders/nose): image-centered box.
+      T = new THREE.Vector3(
+        mid.x + (0.5 - screen.x) * avShoulderW * BOX_W * -MIRROR_X,
+        mid.y + (0.5 - screen.y) * avShoulderW * BOX_H,
+        mid.z + avShoulderW * BOX_DEPTH * FRONT_Z,
+      );
+    }
 
     const S = (side === "Right" ? Rs : Ls).clone();
     const { L1, L2, upperRestAxis, lowerRestAxis } = rig;
@@ -304,17 +341,20 @@ export class SMPLXRetarget {
       this._avatar.markActive();
     }
 
+    // Map the wrist relative to the user's own body (framing-invariant).
+    const userAnchor = this._bodyAnchor(pose2DLandmarks);
+
     // Bone world matrices must be current before we read the shoulders.
     vrm.scene.updateMatrixWorld(true);
 
     if (signerRightArmOn && rightTargetScreen) {
-      this._solveArmIK(vrm, "Right", rightTargetScreen);
+      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor);
     } else if (this._avatar) {
       this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
 
     if (signerLeftArmOn && leftTargetScreen) {
-      this._solveArmIK(vrm, "Left", leftTargetScreen);
+      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor);
     } else if (this._avatar) {
       this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
     }
