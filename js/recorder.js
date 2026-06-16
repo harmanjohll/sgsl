@@ -191,11 +191,23 @@ function mergeHandLandmarker(results, hr) {
 // Captures ~14 s of WORLD hand landmarks only (no face/pose), downsampled, as a
 // small JSON. Lets us iterate hand fidelity on the user's REAL data offline.
 let dumping = false, dumpFrames = [], dumpStart = 0, dumpLastT = -1e9, dumpDbgLogged = false;
+let dumpHandTrackedNow = false; // updated every frame: are 3D world hands visible right now?
 const DUMP_MS = 30000, DUMP_INTERVAL = 150; // ~6.7 fps
 
 function startHandDump() {
   if (dumping) return;
+  // Refuse to start unless we'll actually capture something — the past empty
+  // dumps happened because the dump ran while no 3D hand was being tracked.
+  if (!handLandmarker) {
+    setRecStatus('Hand model still loading — wait a few seconds, raise your hand, then click again.', 'error');
+    return;
+  }
+  if (!dumpHandTrackedNow) {
+    setRecStatus('No 3D hand tracked yet — raise your hand so the avatar mirrors it (overlay shows "world R" or "L: y"), then click again.', 'error');
+    return;
+  }
   dumping = true; dumpFrames = []; dumpStart = performance.now(); dumpLastT = -1e9; dumpDbgLogged = false;
+  updateDumpButton();
   setRecStatus('Dumping 30s — slowly cycle: open palm · fist · V · point · OK · thumb, then rotate palm toward/away.', 'loading');
   setTimeout(stopHandDump, DUMP_MS);
 }
@@ -221,6 +233,13 @@ function captureDumpFrame(results) {
 function stopHandDump() {
   if (!dumping) return;
   dumping = false;
+  updateDumpButton();
+  const withHand = dumpFrames.filter(f => f.rW || f.lW || (f.raw && f.raw.length)).length;
+  // Don't hand the user an empty file — make the failure loud and actionable.
+  if (!withHand) {
+    setRecStatus('⚠ No hands captured — nothing to send. Raise your hand so the avatar mirrors it in 3D (overlay "world R/L: y") BEFORE clicking Dump, then retry.', 'error');
+    return;
+  }
   const payload = { kind: 'sgsl-hand-dump', interval_ms: DUMP_INTERVAL, frames: dumpFrames };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -228,24 +247,49 @@ function stopHandDump() {
   a.href = url; a.download = 'hand-dump.json';
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  const withHand = dumpFrames.filter(f => f.rW || f.lW).length;
   setRecStatus(`Hand dump saved: ${dumpFrames.length} frames (${withHand} with a hand). Send me hand-dump.json.`, 'success');
 }
 function addHandDumpButton() {
   if (document.getElementById('btn-hand-dump')) return;
   const btn = document.createElement('button');
   btn.id = 'btn-hand-dump';
-  btn.textContent = '⬇ Dump hands (14s)';
+  btn.textContent = '⬇ Loading hand model…';
+  btn.disabled = true;
   btn.style.cssText = 'position:fixed;left:16px;bottom:56px;z-index:9999;padding:9px 13px;'
-    + 'background:#33aa77;color:#fff;border:none;border-radius:7px;font:600 13px Inter,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+    + 'background:#6b7280;color:#fff;border:none;border-radius:7px;font:600 13px Inter,sans-serif;cursor:not-allowed;box-shadow:0 2px 8px rgba(0,0,0,.3)';
   btn.addEventListener('click', startHandDump);
   document.body.appendChild(btn);
+  updateDumpButton();
+}
+
+// Reflect live capture-readiness in the dump button so it can never run with
+// nothing tracked (the cause of the past empty dumps). Called every frame.
+function updateDumpButton() {
+  const btn = document.getElementById('btn-hand-dump');
+  if (!btn) return;
+  if (dumping) {
+    btn.disabled = true;
+    btn.textContent = '● Dumping…';
+    btn.style.background = '#cc4444';
+    btn.style.cursor = 'default';
+    return;
+  }
+  const ready = !!handLandmarker && dumpHandTrackedNow;
+  btn.disabled = !ready;
+  btn.style.background = ready ? '#33aa77' : '#6b7280';
+  btn.style.cursor = ready ? 'pointer' : 'not-allowed';
+  btn.textContent = ready ? '⬇ Dump hands (30s)'
+    : (handLandmarker ? '⬇ Show your hand to start' : '⬇ Loading hand model…');
 }
 
 // ─── MediaPipe Results Handler ──────────────────────────────
 function onHolisticResults(results) {
   // 0) Fuse in the dedicated 3D hand landmarks before anything reads hands.
   mergeHandLandmarker(results, lastHandResult);
+  // Track whether 3D world hands are visible RIGHT NOW so the dump button can
+  // gate on it (a dump that runs with no 3D hand captures nothing).
+  dumpHandTrackedNow = !!(results.rightHandWorldLandmarks || results.leftHandWorldLandmarks);
+  if (DEBUG_OVERLAY) updateDumpButton();
   captureDumpFrame(results); // debug: world-hand dump (no-op unless dumping)
 
   // 1) Evaluate framing (needed by overlay + by gate).
@@ -514,6 +558,28 @@ function drawOverlay(results, fr) {
     };
     ring(lTgt, `${lOn ? 'ON' : 'off'} → avatar LEFT`, lOn);
     ring(rTgt, `${rOn ? 'ON' : 'off'} → avatar RIGHT`, rOn);
+  }
+
+  // ── Hand-dump HUD: a big, impossible-to-miss live capture counter. This is
+  // the "M with a hand" number, made obvious — it climbs only while a hand is
+  // actually being captured, so a dead dump is visible at a glance. ──
+  if (dumping) {
+    const withH = dumpFrames.filter(f => f.rW || f.lW || (f.raw && f.raw.length)).length;
+    const live = dumpHandTrackedNow;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(0, 0, canvas.width, 66);
+    // The overlay canvas is displayed mirrored (selfie) — counter-flip the text.
+    ctx.translate(canvas.width / 2, 0); ctx.scale(-1, 1); ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = live ? '#46e878' : '#ff6b6b';
+    ctx.font = 'bold 34px Inter, sans-serif';
+    ctx.fillText(`CAPTURED ${withH}`, 0, 26);
+    ctx.fillStyle = live ? 'rgba(170, 240, 190, 0.95)' : 'rgba(255, 175, 175, 0.98)';
+    ctx.font = '13px Inter, sans-serif';
+    ctx.fillText(live ? 'tracking — keep slowly cycling shapes & rotating your palm'
+                      : 'HAND LOST — show your hand to the camera', 0, 52);
+    ctx.restore();
   }
 
   if (recording) {
