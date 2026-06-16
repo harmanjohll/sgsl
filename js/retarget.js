@@ -80,6 +80,12 @@ const FLEX_GAIN = 1.0;       // scale measured flexion → bone rotation
 const MAX_FLEX = 2.0;        // clamp per joint (rad)
 const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
                                // extended finger reads as ~straight (rad)
+// The thumb's proximal joint is a CMC saddle, NOT a finger MCP — the metacarpal
+// offset above doesn't apply (it ate ~20° of real thumb bend, measured on the
+// handdump_4/5 captures), and the thumb's joint angles are inherently small, so
+// it gets no offset and a higher gain or it visibly under-curls.
+const THUMB_PROX_OFFSET = 0.0; // no finger-MCP offset for the thumb CMC
+const THUMB_FLEX_GAIN = 1.5;   // amplify the thumb's modest measured curl
 // Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
@@ -310,10 +316,13 @@ export class SMPLXRetarget {
       if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
       return Math.acos(clampNum(u.normalize().dot(v.normalize()), -1, 1));
     };
-    let curlSum = 0, curlN = 0;
+    let curlSum = 0, curlN = 0, thumbSum = 0, thumbN = 0;
     for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
       const arr = rig.fingers[f];
       if (!arr) continue;
+      const isThumb = f === 'Thumb';
+      const proxOff = isThumb ? THUMB_PROX_OFFSET : PROX_FLEX_OFFSET;
+      const gain = isThumb ? THUMB_FLEX_GAIN : FLEX_GAIN;
       const k = SEG[f]; // [wrist, mcp, pip, dip, tip]
       const ang = [jointAngle(k[0], k[1], k[2]), jointAngle(k[1], k[2], k[3]), jointAngle(k[2], k[3], k[4])];
       for (let i = 0; i < 3; i++) {
@@ -322,17 +331,18 @@ export class SMPLXRetarget {
         const bone = vrm.humanoid.getBoneNode(BN[`${side}${f}${segNames[i]}`]);
         if (!bone) continue;
         let a = ang[i];
-        if (i === 0) a = a - PROX_FLEX_OFFSET; // strip the natural metacarpal bend
-        a = clampNum(a * FLEX_GAIN, 0, MAX_FLEX);
+        if (i === 0) a = a - proxOff; // strip the natural metacarpal bend (fingers only)
+        a = clampNum(a * gain, 0, MAX_FLEX);
         const delta = new THREE.Quaternion().setFromAxisAngle(fr.flex, FLEX_SIGN * a);
         bone.quaternion.slerp(fr.restQ.clone().multiply(delta), HAND_LERP);
-        if (f !== 'Thumb') { curlSum += a; curlN++; }
+        if (isThumb) { thumbSum += a; thumbN++; } else { curlSum += a; curlN++; }
       }
     }
 
-    // Diagnostic: palm facing (+1 = toward camera) + mean finger flexion (deg).
+    // Diagnostic: palm facing (+1 = toward camera) + mean finger / thumb flexion (deg).
     const curlDeg = curlN ? (curlSum / curlN) * 180 / Math.PI : 0;
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curlDeg), bend: Math.round(wristBend), wind: +wind.toFixed(2) };
+    const thumbDeg = thumbN ? (thumbSum / thumbN) * 180 / Math.PI : 0;
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(curlDeg), thumb: Math.round(thumbDeg), bend: Math.round(wristBend), wind: +wind.toFixed(2) };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -534,7 +544,7 @@ export class SMPLXRetarget {
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
     const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
     const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
-    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— bend:—';
+    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° thumb:${this._handDbg[s].thumb}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— thumb:— bend:—';
     this._lastDebug =
         `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
