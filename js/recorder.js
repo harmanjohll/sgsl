@@ -102,6 +102,8 @@ export async function init() {
   const startBtn = document.getElementById('btn-rec-start');
   if (startBtn) startBtn.disabled = true;
 
+  if (DEBUG_OVERLAY) addHandDumpButton();
+
   setRecStatus('Stand so the green guide turns solid, then calibrate, then record.', 'info');
 }
 
@@ -185,10 +187,55 @@ function mergeHandLandmarker(results, hr) {
   }
 }
 
+// ── Debug: compact world-hand-landmark dump for offline tuning ──────────────
+// Captures ~14 s of WORLD hand landmarks only (no face/pose), downsampled, as a
+// small JSON. Lets us iterate hand fidelity on the user's REAL data offline.
+let dumping = false, dumpFrames = [], dumpStart = 0, dumpLastT = -1e9;
+const DUMP_MS = 14000, DUMP_INTERVAL = 150; // ~6.7 fps
+
+function startHandDump() {
+  if (dumping) return;
+  dumping = true; dumpFrames = []; dumpStart = performance.now(); dumpLastT = -1e9;
+  setRecStatus('Dumping 14s — slowly cycle: open palm · fist · V · point · OK · thumb, then rotate palm toward/away.', 'loading');
+  setTimeout(stopHandDump, DUMP_MS);
+}
+function captureDumpFrame(results) {
+  if (!dumping) return;
+  const now = performance.now() - dumpStart;
+  if (now - dumpLastT < DUMP_INTERVAL) return;
+  dumpLastT = now;
+  const enc = (lms) => lms ? lms.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4)]) : null;
+  dumpFrames.push({ t: Math.round(now), rW: enc(results.rightHandWorldLandmarks), lW: enc(results.leftHandWorldLandmarks) });
+}
+function stopHandDump() {
+  if (!dumping) return;
+  dumping = false;
+  const payload = { kind: 'sgsl-hand-dump', interval_ms: DUMP_INTERVAL, frames: dumpFrames };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'hand-dump.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const withHand = dumpFrames.filter(f => f.rW || f.lW).length;
+  setRecStatus(`Hand dump saved: ${dumpFrames.length} frames (${withHand} with a hand). Send me hand-dump.json.`, 'success');
+}
+function addHandDumpButton() {
+  if (document.getElementById('btn-hand-dump')) return;
+  const btn = document.createElement('button');
+  btn.id = 'btn-hand-dump';
+  btn.textContent = '⬇ Dump hands (14s)';
+  btn.style.cssText = 'position:fixed;left:16px;bottom:56px;z-index:9999;padding:9px 13px;'
+    + 'background:#33aa77;color:#fff;border:none;border-radius:7px;font:600 13px Inter,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+  btn.addEventListener('click', startHandDump);
+  document.body.appendChild(btn);
+}
+
 // ─── MediaPipe Results Handler ──────────────────────────────
 function onHolisticResults(results) {
   // 0) Fuse in the dedicated 3D hand landmarks before anything reads hands.
   mergeHandLandmarker(results, lastHandResult);
+  captureDumpFrame(results); // debug: world-hand dump (no-op unless dumping)
 
   // 1) Evaluate framing (needed by overlay + by gate).
   latestFraming = framingScore(results.poseLandmarks);
