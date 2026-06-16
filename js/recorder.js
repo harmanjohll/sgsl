@@ -190,13 +190,13 @@ function mergeHandLandmarker(results, hr) {
 // ── Debug: compact world-hand-landmark dump for offline tuning ──────────────
 // Captures ~14 s of WORLD hand landmarks only (no face/pose), downsampled, as a
 // small JSON. Lets us iterate hand fidelity on the user's REAL data offline.
-let dumping = false, dumpFrames = [], dumpStart = 0, dumpLastT = -1e9;
-const DUMP_MS = 14000, DUMP_INTERVAL = 150; // ~6.7 fps
+let dumping = false, dumpFrames = [], dumpStart = 0, dumpLastT = -1e9, dumpDbgLogged = false;
+const DUMP_MS = 30000, DUMP_INTERVAL = 150; // ~6.7 fps
 
 function startHandDump() {
   if (dumping) return;
-  dumping = true; dumpFrames = []; dumpStart = performance.now(); dumpLastT = -1e9;
-  setRecStatus('Dumping 14s — slowly cycle: open palm · fist · V · point · OK · thumb, then rotate palm toward/away.', 'loading');
+  dumping = true; dumpFrames = []; dumpStart = performance.now(); dumpLastT = -1e9; dumpDbgLogged = false;
+  setRecStatus('Dumping 30s — slowly cycle: open palm · fist · V · point · OK · thumb, then rotate palm toward/away.', 'loading');
   setTimeout(stopHandDump, DUMP_MS);
 }
 function captureDumpFrame(results) {
@@ -204,8 +204,19 @@ function captureDumpFrame(results) {
   const now = performance.now() - dumpStart;
   if (now - dumpLastT < DUMP_INTERVAL) return;
   dumpLastT = now;
-  const enc = (lms) => lms ? lms.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4)]) : null;
-  dumpFrames.push({ t: Math.round(now), rW: enc(results.rightHandWorldLandmarks), lW: enc(results.leftHandWorldLandmarks) });
+  const enc = (lms) => (lms && lms.length) ? lms.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4)]) : null;
+  // Source 1: merged results (what the avatar actually drove from).
+  const rW = enc(results.rightHandWorldLandmarks), lW = enc(results.leftHandWorldLandmarks);
+  // Source 2: raw HandLandmarker output (bypasses the merge), with handedness.
+  const hr = lastHandResult, raw = [];
+  if (hr && hr.worldLandmarks) for (let i = 0; i < hr.worldLandmarks.length; i++)
+    raw.push({ side: hr.handedness?.[i]?.[0]?.categoryName || '?', w: enc(hr.worldLandmarks[i]) });
+  if (!dumpDbgLogged) { dumpDbgLogged = true; console.log('[dump] merged R/L:', !!rW, !!lW, '| raw hands:', raw.length, '| hr keys:', hr ? Object.keys(hr).join(',') : 'none'); }
+  dumpFrames.push({ t: Math.round(now), rW, lW, raw });
+  if (dumpFrames.length % 6 === 0) {
+    const withH = dumpFrames.filter(f => f.rW || f.lW || (f.raw && f.raw.length)).length;
+    setRecStatus(`Dumping… ${dumpFrames.length} frames, ${withH} with a hand — keep cycling shapes.`, 'loading');
+  }
 }
 function stopHandDump() {
   if (!dumping) return;
