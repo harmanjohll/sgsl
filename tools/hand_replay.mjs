@@ -35,7 +35,10 @@ import { readFileSync } from 'node:fs';
 // retarget.js:66  HAND_WX/WY/WZ ; :70 HAND_DET ; :87-92 WIND_SIGN/WIND_THRESH
 const HAND_W = [-1, -1, -1];   // HAND_WX, HAND_WY, HAND_WZ
 const HAND_DET = -1;
-const WIND_SIGN = 1;           // GLOBAL today — the thing under suspicion
+// Per-side, mirroring retarget.js. Pinned by handdump_4/5: the two hands are
+// mirror-chirality so the winding→facing sign differs. A wrong sign shows up
+// here as a ~90% override-fire rate / ~0% agreement (see the verdict logic).
+const WIND_SIGN = { Left: 1, Right: -1 };
 const WIND_THRESH = 0.3;
 
 // ── tiny vec3 helpers (landmarks are [x,y,z] arrays) ──
@@ -60,7 +63,7 @@ const V = (pts, i) => [pts[i][0] * HAND_W[0], pts[i][1] * HAND_W[1], pts[i][2] *
 // it does not touch the winding or the desired-facing sign, which is what we
 // are diagnosing. palmNormal here uses the raw fingerDir — the same z-sign the
 // override tests.
-function orient(pts, state) {
+function orient(pts, state, windSign) {
   const wrist = V(pts, 0);
   const fingerDir = norm(sub(V(pts, 9), wrist));
   const across = sub(V(pts, 17), V(pts, 5));
@@ -73,7 +76,7 @@ function orient(pts, state) {
   const wind = windRaw / (Math.hypot(a[0], a[1]) * Math.hypot(b[0], b[1]) + 1e-9);
 
   // temporal hold of the facing sign (per side) — retarget.js:293-294
-  if (Math.abs(wind) > WIND_THRESH) state.facing = sgn(wind) * WIND_SIGN;
+  if (Math.abs(wind) > WIND_THRESH) state.facing = sgn(wind) * windSign;
   const desired = state.facing;
 
   // the override — negate palm normal when its z-sign disagrees with `desired`
@@ -109,6 +112,7 @@ function loadFrames(json) {
 
 function analyzeSide(frames, side) {
   const state = { facing: 0 };
+  const windSign = WIND_SIGN[side] ?? 1;
   const rows = [];
   let nData = 0, nNeg = 0, nEdge = 0, nAgree = 0, nMeasured = 0;
   let prevRoll = null, maxJump = 0, flips = 0, prevPalmZsign = 0;
@@ -116,12 +120,12 @@ function analyzeSide(frames, side) {
     const pts = fr[side];
     if (!pts || pts.length < 18) { rows.push(null); continue; }
     nData++;
-    const r = orient(pts, state);
+    const r = orient(pts, state, windSign);
     // agreement of the *raw* palm z-sign with the winding-desired sign,
     // measured only where the hand isn't edge-on (winding is meaningful)
     if (!r.edgeOn) {
       nMeasured++;
-      if (sgn(r.palmZraw) === sgn(r.wind) * WIND_SIGN) nAgree++;
+      if (sgn(r.palmZraw) === sgn(r.wind) * windSign) nAgree++;
     }
     if (r.negated) nNeg++;
     if (r.edgeOn) nEdge++;
@@ -137,7 +141,7 @@ function analyzeSide(frames, side) {
     if (pzs) prevPalmZsign = pzs;
     rows.push({ t: fr.t, ...r, roll });
   }
-  return { side, nData, nNeg, nEdge, nAgree, nMeasured, maxJump, flips, rows };
+  return { side, windSign, nData, nNeg, nEdge, nAgree, nMeasured, maxJump, flips, rows };
 }
 
 function pct(n, d) { return d ? (100 * n / d).toFixed(0) + '%' : '—'; }
@@ -154,8 +158,8 @@ function report(side, a) {
   const agree = a.nMeasured ? a.nAgree / a.nMeasured : 1;
   let verdict;
   if (a.nMeasured < 5) verdict = 'inconclusive (too few non-edge-on frames — wave the palm more)';
-  else if (agree >= 0.7 && fireRate <= 0.3) verdict = `HEALTHY — WIND_SIGN ${WIND_SIGN} suits this side.`;
-  else if (agree <= 0.3) verdict = `SUSPECT — raw geometry systematically DISAGREES with winding*${WIND_SIGN}; this side likely needs WIND_SIGN = ${-WIND_SIGN}.`;
+  else if (agree >= 0.7 && fireRate <= 0.3) verdict = `HEALTHY — WIND_SIGN ${a.windSign} suits this side.`;
+  else if (agree <= 0.3) verdict = `SUSPECT — raw geometry systematically DISAGREES with winding*${a.windSign}; this side likely needs WIND_SIGN = ${-a.windSign}.`;
   else verdict = 'mixed — palm facing is unstable here (depth flips); inspect samples below.';
   console.log(`  → ${verdict}`);
   // a few samples spread across the clip
