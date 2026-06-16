@@ -84,11 +84,12 @@ const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
 // force the palm normal's facing to match it. WIND_SIGN pinned by the harness.
-const WIND_SIGN = 1;         // winding sign → facing (pinned by LIVE data: the
-                            // user's palm-to-camera must give the avatar palm to
-                            // us; my synthetic hand's chirality is the opposite
-                            // of real MediaPipe, so the harness only checks the
-                            // MECHANISM — flip-robustness + no pinch — not this sign)
+// Per-side: the two hands are mirror-image chirality, so the winding→facing sign
+// genuinely differs. Pinned by REAL captures (handdump_4/5) via tools/hand_replay.mjs:
+// with a single global sign the override fired ~90% of frames on one hand (palm
+// forced 180° off); per-side, override drops to ~8% and raw-vs-winding agreement
+// is ~100%. Left = the user's RIGHT hand (already correct); Right = their LEFT hand.
+const WIND_SIGN = { Left: 1, Right: -1 };
 const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
 
 let oldLookTarget = new THREE.Euler();
@@ -290,7 +291,7 @@ export class SMPLXRetarget {
     const a = V(5).sub(V(0)), b = V(17).sub(V(0));
     const windRaw = a.x * b.y - a.y * b.x;
     const wind = windRaw / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) + 1e-9);
-    if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN;
+    if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
     const desired = this._handFacing[side];
     if (desired !== 0 && Math.sign(palmNormal.z || 0) !== desired) palmNormal.negate();
 
