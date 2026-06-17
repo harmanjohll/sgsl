@@ -79,9 +79,11 @@ const WRIST_STRAIGHTEN = 0.6;
 // axis and no tuning gains. (The old per-joint FLEXION-ANGLE model curled the thumb
 // about cross(thumbDir, palmNormal), which lifts it OUT of the palm plane instead
 // of folding it across the palm, so the thumb juts out; direct aim fixes that.)
-// Per-finger landmark chains [wrist, mcp, pip, dip, tip] and digit names.
+// Per-finger landmark chains [wrist, mcp, pip, dip, tip]. (Digit names use the
+// shared FINGER_NAMES list declared at the top of the module — do NOT redeclare
+// it here: a second `const FINGER_NAMES` is a duplicate-declaration SyntaxError
+// that breaks the whole module, and `node --check` does NOT catch it.)
 const FINGER_SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,12], Ring: [0,13,14,15,16], Little: [0,17,18,19,20] };
-const FINGER_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
 // Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
