@@ -359,8 +359,12 @@ export class SMPLXRetarget {
     const Xa = Xr.applyQuaternion(Qh), Ya = Yr.applyQuaternion(Qh), Za = Zr.applyQuaternion(Qh);
     // Re-express a mapped-world segment dir into the avatar hand frame (a digit bent
     // θ off the palm in the real hand bends θ off the avatar palm — same intrinsics).
+    // The ACROSS (X) component carries the chirality flip from the V() point-inversion
+    // (HAND_W = -1,-1,-1, det = HAND_DET): palmNormal is sign-corrected by HAND_DET but
+    // the across axis is not, so without this factor splay inverts (spread↔together) and
+    // the thumb folds the wrong way. Verified visually with tools/hand_fk_preview.mjs.
     const toHand = (d) => new THREE.Vector3()
-      .addScaledVector(Xa, d.dot(Xm))
+      .addScaledVector(Xa, HAND_DET * d.dot(Xm))
       .addScaledVector(Ya, d.dot(Ym))
       .addScaledVector(Za, d.dot(Zm));
     for (const f of FINGER_NAMES) {
