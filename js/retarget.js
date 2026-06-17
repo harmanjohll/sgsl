@@ -86,6 +86,21 @@ const PROX_FLEX_OFFSET = 0.35; // subtract the natural metacarpal angle so an
 // it gets no offset and a higher gain or it visibly under-curls.
 const THUMB_PROX_OFFSET = 0.0; // no finger-MCP offset for the thumb CMC
 const THUMB_FLEX_GAIN = 1.5;   // amplify the thumb's modest measured curl
+// Per-finger landmark chains [wrist, mcp, pip, dip, tip] and names — shared by
+// the live curl and the per-signer hand calibration.
+const FINGER_SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,12], Ring: [0,13,14,15,16], Little: [0,17,18,19,20] };
+const FINGER_NAMES = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
+// Optional per-signer calibration maps the signer's own open→fist joint range
+// onto these avatar full-curl targets per joint (rad) — replacing the fixed
+// offsets above when a hand calibration has been captured.
+const CURL_TARGET = {
+  Thumb:  [0.7, 0.9, 1.0],
+  Index:  [1.3, 1.7, 1.4],
+  Middle: [1.4, 1.8, 1.4],
+  Ring:   [1.4, 1.8, 1.4],
+  Little: [1.3, 1.7, 1.3],
+};
+const MIN_CAL_RANGE = 0.30; // floor on (fist−open) per joint so a weak capture can't blow up the gain
 // Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
@@ -113,11 +128,46 @@ export class SMPLXRetarget {
     this._handDbg = { Right: null, Left: null };
     // Last stable palm-facing sign per hand (for the edge-on temporal hold).
     this._handFacing = { Right: 0, Left: 0 };
+    // Optional per-signer finger calibration {Left|Right: {finger:[{rest,max}×3]}}.
+    this._handCalib = null;
   }
   reset() {
     oldLookTarget = new THREE.Euler();
     this._rightArmStreak = 0;
     this._leftArmStreak = 0;
+  }
+
+  /** Per-signer finger calibration (open→fist range), or null to use defaults.
+   *  Keyed by retarget side ('Left'/'Right'); see recorder.js hand calibration. */
+  setHandCalibration(calib) { this._handCalib = calib || null; }
+
+  /** Per-finger joint angles (rad) [proximal, intermediate, distal] from a hand's
+   *  21 world landmarks. Shared by the live curl and the calibration capture. */
+  _fingerJointAngles(world) {
+    const P = (i) => new THREE.Vector3(world[i].x, world[i].y, world[i].z);
+    const ja = (a, b, c) => {
+      const u = P(b).sub(P(a)), v = P(c).sub(P(b));
+      if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
+      return Math.acos(clampNum(u.normalize().dot(v.normalize()), -1, 1));
+    };
+    const out = {};
+    for (const f of FINGER_NAMES) {
+      const k = FINGER_SEG[f];
+      out[f] = [ja(k[0], k[1], k[2]), ja(k[1], k[2], k[3]), ja(k[2], k[3], k[4])];
+    }
+    return out;
+  }
+
+  /** Measure finger angles for whichever hands are present, routed to the same
+   *  retarget sides _driveHand uses. Returns {Left, Right} (null where absent). */
+  fingerAnglesFromResults(results) {
+    const map = { Right: results.leftHandWorldLandmarks, Left: results.rightHandWorldLandmarks };
+    const out = { Left: null, Right: null };
+    for (const side of ['Left', 'Right']) {
+      const w = map[side];
+      if (w && w.length >= 21) out[side] = this._fingerJointAngles(w);
+    }
+    return out;
   }
 
   /** Caller wires up a video element (recorder) or null (viewer). */
@@ -309,30 +359,33 @@ export class SMPLXRetarget {
     // and are rotation-invariant → no twist, decoupled from hand orientation,
     // so they follow the (straightened) wrist naturally.
     const segNames = ['Proximal', 'Intermediate', 'Distal'];
-    const SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,12], Ring: [0,13,14,15,16], Little: [0,17,18,19,20] };
-    const P = (i) => new THREE.Vector3(world[i].x, world[i].y, world[i].z);
-    const jointAngle = (a, b, c) => {
-      const u = P(b).sub(P(a)), v = P(c).sub(P(b));
-      if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
-      return Math.acos(clampNum(u.normalize().dot(v.normalize()), -1, 1));
-    };
+    const angles = this._fingerJointAngles(world);
+    const cal = this._handCalib?.[side]; // per-signer rest/max, or undefined → defaults
     let curlSum = 0, curlN = 0, thumbSum = 0, thumbN = 0;
-    for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+    for (const f of FINGER_NAMES) {
       const arr = rig.fingers[f];
       if (!arr) continue;
       const isThumb = f === 'Thumb';
       const proxOff = isThumb ? THUMB_PROX_OFFSET : PROX_FLEX_OFFSET;
       const gain = isThumb ? THUMB_FLEX_GAIN : FLEX_GAIN;
-      const k = SEG[f]; // [wrist, mcp, pip, dip, tip]
-      const ang = [jointAngle(k[0], k[1], k[2]), jointAngle(k[1], k[2], k[3]), jointAngle(k[2], k[3], k[4])];
+      const fcal = cal?.[f];
+      const ang = angles[f];
       for (let i = 0; i < 3; i++) {
         const fr = arr[i];
         if (!fr) continue;
         const bone = vrm.humanoid.getBoneNode(BN[`${side}${f}${segNames[i]}`]);
         if (!bone) continue;
-        let a = ang[i];
-        if (i === 0) a = a - proxOff; // strip the natural metacarpal bend (fingers only)
-        a = clampNum(a * gain, 0, MAX_FLEX);
+        let a;
+        if (fcal && fcal[i]) {
+          // Per-signer: map THIS signer's own open→fist range onto the avatar target.
+          const { rest, max } = fcal[i];
+          const range = Math.max(max - rest, MIN_CAL_RANGE);
+          a = clampNum((ang[i] - rest) / range * CURL_TARGET[f][i], 0, MAX_FLEX);
+        } else {
+          a = ang[i];
+          if (i === 0) a = a - proxOff; // strip the natural metacarpal bend (fingers only)
+          a = clampNum(a * gain, 0, MAX_FLEX);
+        }
         const delta = new THREE.Quaternion().setFromAxisAngle(fr.flex, FLEX_SIGN * a);
         bone.quaternion.slerp(fr.restQ.clone().multiply(delta), HAND_LERP);
         if (isThumb) { thumbSum += a; thumbN++; } else { curlSum += a; curlN++; }
