@@ -35,10 +35,11 @@ import { readFileSync } from 'node:fs';
 // retarget.js:66  HAND_WX/WY/WZ ; :70 HAND_DET ; :87-92 WIND_SIGN/WIND_THRESH
 const HAND_W = [-1, -1, -1];   // HAND_WX, HAND_WY, HAND_WZ
 const HAND_DET = -1;
-// Per-side, mirroring retarget.js. Pinned by handdump_4/5: the two hands are
-// mirror-chirality so the winding→facing sign differs. A wrong sign shows up
-// here as a ~90% override-fire rate / ~0% agreement (see the verdict logic).
-const WIND_SIGN = { Left: 1, Right: -1 };
+// Per-side, mirroring retarget.js. BOTH sides want -1 — pinned by handdump_4/5
+// (side "Right") and handdump_6–9 (side "Left", 339 non-edge-on frames: 0%
+// agreement at +1, ~100% at -1). A wrong sign shows up here as a ~90%
+// override-fire rate / ~0% agreement (see the verdict logic).
+const WIND_SIGN = { Left: -1, Right: -1 };
 const WIND_THRESH = 0.3;
 
 // ── tiny vec3 helpers (landmarks are [x,y,z] arrays) ──
@@ -172,6 +173,54 @@ function report(side, a) {
   }
 }
 
+// ── Digit direct-aim geometry check ──────────────────────────────
+// Validates the thumb-fix premise on REAL data: when the thumb curls it should
+// sweep ACROSS the palm (toward the fingers) and stay roughly IN the palm plane —
+// which DIRECT HAND-LOCAL AIM (retarget.js _driveHand) reproduces, but the old
+// cross(thumbDir, palmNormal) flex axis did not (it lifts the thumb out of the
+// plane → it juts out). Also prints each digit's curl range so we can see the
+// fingers actually move through open→closed on the clip.
+const deg = (r) => r * 180 / Math.PI;
+function jointAngle(pts, a, b, c) {
+  const u = sub(V(pts, b), V(pts, a)), v = sub(V(pts, c), V(pts, b));
+  if (len(u) < 1e-9 || len(v) < 1e-9) return 0;
+  return deg(Math.acos(Math.max(-1, Math.min(1, dot(norm(u), norm(v))))));
+}
+const FSEG = { Thumb:[0,1,2,3,4], Index:[0,5,6,7,8], Middle:[0,9,10,11,12], Ring:[0,13,14,15,16], Little:[0,17,18,19,20] };
+function digitReport(frames, side) {
+  const present = frames.map(f => f[side]).filter(p => p && p.length >= 21);
+  if (present.length < 5) { console.log(`\n### digits "${side}": too few frames.`); return; }
+  let nDegen = 0; const curled = [];
+  for (const pts of present) {
+    const wrist = V(pts, 0);
+    const f = norm(sub(V(pts, 9), wrist));
+    const n = norm(scl(cross(f, sub(V(pts, 17), V(pts, 5))), HAND_DET));
+    const xRaw = cross(f, n);
+    if (len(xRaw) < 1e-6) { nDegen++; continue; }   // degenerate hand frame
+    const Xm = norm(xRaw), Zm = norm(cross(Xm, f));
+    const td = norm(sub(V(pts, 4), V(pts, 2)));      // thumb overall dir (MCP→tip)
+    const across = Math.abs(dot(td, Xm)), nrm = Math.abs(dot(td, Zm));
+    const ip = jointAngle(pts, 2, 3, 4);             // thumb IP curl
+    if (ip > 30) curled.push({ across, nrm, oop: deg(Math.asin(Math.min(1, nrm))) });
+  }
+  const mean = (a, k) => a.length ? a.reduce((s, x) => s + x[k], 0) / a.length : 0;
+  console.log(`\n### digits "${side}"  (${present.length} frames, ${nDegen} degenerate, ${curled.length} curled-thumb frames IP>30°)`);
+  if (curled.length >= 3) {
+    const ax = mean(curled, 'across'), no = mean(curled, 'nrm'), oop = mean(curled, 'oop');
+    const pass = oop < 35 && ax > no;
+    console.log(`  curled thumb: |across-palm|=${ax.toFixed(2)}  |out-of-palm|=${no.toFixed(2)}  mean tilt off palm plane=${oop.toFixed(0)}°`);
+    console.log(`  → ${pass ? 'PASS — thumb folds ACROSS the palm & stays in-plane (direct aim reproduces this; old axis did not).'
+                            : 'CHECK — thumb leaves the palm plane on these frames (could be a thumbs-up clip rather than a grip).'}`);
+  } else {
+    console.log('  (no strongly-curled thumb frames — a fist/grip clip would exercise the fold.)');
+  }
+  for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+    const k = FSEG[f];
+    const tot = present.map(p => jointAngle(p,k[0],k[1],k[2]) + jointAngle(p,k[1],k[2],k[3]) + jointAngle(p,k[2],k[3],k[4]));
+    console.log(`  ${f.padEnd(6)} total curl  min ${Math.min(...tot).toFixed(0).padStart(3)}°  max ${Math.max(...tot).toFixed(0).padStart(3)}°`);
+  }
+}
+
 // ── main ──
 const args = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const file = args[0];
@@ -190,5 +239,7 @@ if (!withAny) {
 }
 report('Left', analyzeSide(frames, 'Left'));
 report('Right', analyzeSide(frames, 'Right'));
+digitReport(frames, 'Left');
+digitReport(frames, 'Right');
 console.log('\nNote: WRIST_STRAIGHTEN is intentionally not modelled here (needs the live');
 console.log('IK forearm); it does not affect the winding/desired-facing decision above.');
