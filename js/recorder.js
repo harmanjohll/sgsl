@@ -192,6 +192,24 @@ function mergeHandLandmarker(results, hr) {
 // small JSON. Lets us iterate hand fidelity on the user's REAL data offline.
 let dumping = false, dumpFrames = [], dumpStart = 0, dumpLastT = -1e9, dumpDbgLogged = false;
 let dumpHandTrackedNow = false; // updated every frame: are 3D world hands visible right now?
+let pendingArmFrame = null;     // dump frame awaiting its avatar arm state (filled post-drive)
+
+// Read the posed avatar arm joint WORLD positions (shoulder→elbow→wrist) per side.
+// The hand is driven from 3D landmarks but the forearm is placed by the 2D arm-IK;
+// the wrist bends/pinches at their junction, which the hand-only landmarks can't
+// show — so we capture the arm so tools/hand_fk_preview.mjs can render the wrist.
+function armWorld(vrm) {
+  if (!vrm?.humanoid) return null;
+  const pos = (nm) => {
+    const b = vrm.humanoid.getBoneNode(nm);
+    if (!b) return null;
+    const e = b.matrixWorld.elements; // world translation = elements[12..14]
+    return [+e[12].toFixed(4), +e[13].toFixed(4), +e[14].toFixed(4)];
+  };
+  const out = {};
+  for (const s of ['left', 'right']) out[s] = { ua: pos(s + 'UpperArm'), la: pos(s + 'LowerArm'), hand: pos(s + 'Hand') };
+  return out;
+}
 const DUMP_MS = 30000, DUMP_INTERVAL = 150; // ~6.7 fps
 
 function startHandDump() {
@@ -208,7 +226,7 @@ function startHandDump() {
   }
   dumping = true; dumpFrames = []; dumpStart = performance.now(); dumpLastT = -1e9; dumpDbgLogged = false;
   updateDumpButton();
-  setRecStatus('Dumping 30s — slowly cycle: open palm · fist · V · point · OK · thumb, then rotate palm toward/away.', 'loading');
+  setRecStatus('Dumping 30s — keep your whole forearm in frame and MOVE the arm (out, up, across, near your face) while cycling: open palm · fist · V · point · OK · thumb, and rotate palm toward/away. (Capturing the wrist + arm this time.)', 'loading');
   setTimeout(stopHandDump, DUMP_MS);
 }
 function captureDumpFrame(results) {
@@ -224,7 +242,9 @@ function captureDumpFrame(results) {
   if (hr && hr.worldLandmarks) for (let i = 0; i < hr.worldLandmarks.length; i++)
     raw.push({ side: hr.handedness?.[i]?.[0]?.categoryName || '?', w: enc(hr.worldLandmarks[i]) });
   if (!dumpDbgLogged) { dumpDbgLogged = true; console.log('[dump] merged R/L:', !!rW, !!lW, '| raw hands:', raw.length, '| hr keys:', hr ? Object.keys(hr).join(',') : 'none'); }
-  dumpFrames.push({ t: Math.round(now), rW, lW, raw });
+  const frame = { t: Math.round(now), rW, lW, raw, arm: null };
+  pendingArmFrame = frame;          // arm state attached after the avatar is driven this frame
+  dumpFrames.push(frame);
   if (dumpFrames.length % 6 === 0) {
     const withH = dumpFrames.filter(f => f.rW || f.lW || (f.raw && f.raw.length)).length;
     setRecStatus(`Dumping… ${dumpFrames.length} frames, ${withH} with a hand — keep cycling shapes.`, 'loading');
@@ -240,7 +260,7 @@ function stopHandDump() {
     setRecStatus('⚠ No hands captured — nothing to send. Raise your hand so the avatar mirrors it in 3D (overlay "world R/L: y") BEFORE clicking Dump, then retry.', 'error');
     return;
   }
-  const payload = { kind: 'sgsl-hand-dump', interval_ms: DUMP_INTERVAL, frames: dumpFrames };
+  const payload = { kind: 'sgsl-hand-dump', version: 2, interval_ms: DUMP_INTERVAL, frames: dumpFrames };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -302,6 +322,8 @@ function onHolisticResults(results) {
   // 3) Live avatar preview.
   if (avatar?.vrm && retarget) {
     retarget.applyFromMediaPipe(avatar.vrm, results);
+    // Capture the arm AFTER the drive so it matches this frame's hands exactly.
+    if (pendingArmFrame) { pendingArmFrame.arm = armWorld(avatar.vrm); pendingArmFrame = null; }
   }
   const dbg = document.getElementById('rec-debug');
   if (dbg && retarget._lastDebug) dbg.textContent = retarget._lastDebug;
