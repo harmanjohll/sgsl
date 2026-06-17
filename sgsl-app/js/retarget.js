@@ -69,10 +69,16 @@ const HAND_WX = -1, HAND_WY = -1, HAND_WZ = -1;
 // rest palm axis (computed in un-reflected avatar space).
 const HAND_DET = HAND_WX * HAND_WY * HAND_WZ;
 const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
-// Blend the hand's finger axis toward the avatar's forearm direction (0 = pure
-// 3D hand orientation, 1 = wrist locked straight to the forearm). Prevents the
-// wrist hyperextending when the 2D-IK forearm and the 3D hand diverge.
-const WRIST_STRAIGHTEN = 0.6;
+// Wrist: the 2D arm-IK pins the forearm onto a fixed forward plane (BOX_DEPTH), so it
+// disagrees with the reliable 3D hand and the wrist pinches at the seam. Instead of
+// bending the HAND toward that bad forearm (the old WRIST_STRAIGHTEN, which corrupted the
+// trusted hand orientation), re-aim the FOREARM to follow the real hand — fingerDir is a
+// better forearm-depth estimate than the plane guess — so the wrist stays straight while
+// the hand keeps its true orientation. STRAIGHT_GAIN: 1 = forearm fully follows the hand;
+// <1 leaves a slight natural bend. WRIST_SWING_CAP bounds the swing from the IK dir
+// (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
+const STRAIGHT_GAIN = 1.0;
+const WRIST_SWING_CAP = 80 * Math.PI / 180;
 // Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
 // is aimed along its real landmark segment, re-expressed in the avatar's hand
 // frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
@@ -305,20 +311,31 @@ export class SMPLXRetarget {
     // Hand orientation (palm facing).
     const wrist = V(0);
     const fingerDir = V(9).sub(wrist).normalize();
-    // The hand orientation is absolute (from 3D landmarks) but the forearm is
-    // positioned by the 2D arm-IK; left unchecked the wrist bridges the gap and
-    // hyperextends. Blend the finger axis toward the avatar's real forearm
-    // direction (elbow→wrist) to keep the wrist natural. Palm facing + curls are
-    // preserved (palm normal is re-projected ⊥ to the blended axis).
+    // Re-aim the FOREARM to follow the real 3D hand so the wrist stays straight (no
+    // pinch), keeping fingerDir (the hand orientation) untouched. The elbow placement
+    // from _solveArmIK is preserved — only the forearm's final rotation is overwritten.
     const lowerArm = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    const armRig = this._avatar?.armRig?.[side];
     let wristBend = 0;
     if (lowerArm) {
       const fwd = hand.getWorldPosition(new THREE.Vector3())
         .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
       if (fwd.lengthSq() > 1e-9) {
         fwd.normalize();
-        wristBend = Math.acos(clampNum(fingerDir.dot(fwd), -1, 1)) * 180 / Math.PI;
-        fingerDir.lerp(fwd, WRIST_STRAIGHTEN).normalize();
+        wristBend = Math.acos(clampNum(fingerDir.dot(fwd), -1, 1)) * 180 / Math.PI; // raw seam
+        if (armRig) {
+          // Clamp the swing from the IK forearm dir toward the hand (bad-frame backstop),
+          // blend by STRAIGHT_GAIN, then aim the forearm there.
+          let target = fingerDir.clone();
+          const swing = Math.acos(clampNum(fwd.dot(fingerDir), -1, 1));
+          if (swing > WRIST_SWING_CAP) target.copy(fwd).lerp(fingerDir, WRIST_SWING_CAP / swing).normalize();
+          const aim = fwd.clone().lerp(target, STRAIGHT_GAIN).normalize();
+          this._aimBone(lowerArm, armRig.lowerRestAxis, aim, ARM_IK_LERP);
+          lowerArm.updateWorldMatrix(true, true); // also refreshes the Hand (child) world transform
+          const res = hand.getWorldPosition(new THREE.Vector3())
+            .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
+          if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI; // residual (HUD sentinel)
+        }
       }
     }
     // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),

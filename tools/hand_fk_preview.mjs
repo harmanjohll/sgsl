@@ -35,6 +35,7 @@ const FCOLOR = { Thumb: [220,40,40], Index: [240,150,20], Middle: [40,180,60], R
 const c = (p, k) => Array.isArray(p) ? p[k] : p[['x','y','z'][k]];
 const Vv = (pts, i) => new THREE.Vector3(c(pts[i],0)*HAND_W[0], c(pts[i],1)*HAND_W[1], c(pts[i],2)*HAND_W[2]); // avatar space
 const Rv = (pts, i) => new THREE.Vector3(c(pts[i],0), c(pts[i],1), c(pts[i],2));                                // raw space
+const Av = (p) => new THREE.Vector3(p[0], p[1], p[2]); // captured avatar-WORLD arm joint (recorder armWorld; post scene.rotation.y=π) — do NOT map through HAND_W
 
 // ── GLB (VRM 0.x) rest-pose loader ──
 function loadVRM(path) {
@@ -165,6 +166,92 @@ function avatarHand(vrm, rig, side, pts, { fixAcross }) {
   return out;
 }
 
+// ── arm-aware _driveHand: orient the hand anchored at the CAPTURED avatar wrist and
+//    FK fingers in avatar-WORLD, alongside the captured arm S→E→W. Three modes:
+//      real — true 3D hand orientation on the captured (IK) forearm → shows the raw seam
+//      now  — current deployed behavior: blend fingerDir 0.6 toward the forearm (the pinch)
+//      fix  — proposed: keep the true hand, re-aim the forearm to follow it (wrist straight)
+//    Returns { arm:[S,E,Wuse], wrist:Wuse, fingers:{f:[j..]}, rawBend, kink } in avatar-world.
+//    handWorldQ is parent-independent (basisQuat(fingerDir,palmNormal)·qRest⁻¹), so the
+//    captured wrist POSITION is all we need — see retarget.js _orientHand. ─────────────
+function avatarArmHand(vrm, rig, side, pts, arm, mode) {
+  const S = Av(arm.ua), E = Av(arm.la), W = Av(arm.hand);
+  const wrist0 = Vv(pts, 0);
+  const fingerDirReal = Vv(pts, 9).sub(wrist0).normalize();
+  const across = Vv(pts, 17).sub(Vv(pts, 5));
+  // winding/facing override (retarget.js:329-336)
+  const a = Vv(pts,5).sub(wrist0), b = Vv(pts,17).sub(wrist0);
+  const wind = (a.x*b.y - a.y*b.x) / (Math.hypot(a.x,a.y)*Math.hypot(b.x,b.y) + 1e-9);
+  const facing = Math.abs(wind) > WIND_THRESH ? Math.sign(wind) * WIND_SIGN[side] : 0;
+  const palmFrom = (fd) => { const pn = new THREE.Vector3().crossVectors(fd, across).multiplyScalar(HAND_DET).normalize();
+    if (facing !== 0 && Math.sign(pn.z||0) !== facing) pn.negate(); return pn; };
+  const palmReal = palmFrom(fingerDirReal);
+
+  const fwd = W.clone().sub(E);
+  const fwdN = fwd.lengthSq() > 1e-9 ? fwd.clone().normalize() : new THREE.Vector3(0,1,0);
+  const L2 = fwd.length() || 0.1;
+  const deg = (u, v) => Math.acos(Math.max(-1, Math.min(1, u.dot(v)))) * 180 / Math.PI;
+  const rawBend = deg(fingerDirReal, fwdN); // real hand vs captured forearm (= live HUD bend)
+
+  let fingerDir, palmNormal, Wuse;
+  if (mode === 'now') {                                  // current deployed: WRIST_STRAIGHTEN=0.6
+    fingerDir = fingerDirReal.clone().lerp(fwdN, 0.6).normalize();
+    palmNormal = palmFrom(fingerDir);
+    Wuse = W.clone();
+  } else if (mode === 'fix') {                            // forearm follows the hand
+    fingerDir = fingerDirReal.clone();
+    palmNormal = palmReal.clone();
+    Wuse = E.clone().add(fingerDirReal.clone().multiplyScalar(L2));
+  } else {                                                // real
+    fingerDir = fingerDirReal.clone();
+    palmNormal = palmReal.clone();
+    Wuse = W.clone();
+  }
+  const armFwd = Wuse.clone().sub(E);
+  const kink = armFwd.lengthSq() > 1e-9 ? deg(fingerDir, armFwd.normalize()) : 0; // rendered wrist kink
+
+  // hand world orientation (parent-independent) + the exact toHand frame from avatarHand
+  const qRest = basisQuat(rig.fingerAxis, rig.palmAxis);
+  const handWorldQ = basisQuat(fingerDir, palmNormal).multiply(qRest.clone().invert());
+  const Ym = fingerDir.clone().normalize();
+  const Xm = new THREE.Vector3().crossVectors(Ym, palmNormal).normalize();
+  const Zm = new THREE.Vector3().crossVectors(Xm, Ym).normalize();
+  const Yr = rig.fingerAxis.clone().normalize();
+  const Xr = new THREE.Vector3().crossVectors(Yr, rig.palmAxis).normalize();
+  const Zr = new THREE.Vector3().crossVectors(Xr, Yr).normalize();
+  const Xa = Xr.clone().applyQuaternion(handWorldQ), Ya = Yr.clone().applyQuaternion(handWorldQ), Za = Zr.clone().applyQuaternion(handWorldQ);
+  const toHand = (d) => new THREE.Vector3()
+    .addScaledVector(Xa, HAND_DET * d.dot(Xm))
+    .addScaledVector(Ya, d.dot(Ym))
+    .addScaledVector(Za, d.dot(Zm));
+
+  const fingers = {};
+  for (const f of FINGERS) {
+    const arr = rig.fingers[f]; if (!arr) continue;
+    const k = FSEG[f];
+    let parentPos = Wuse.clone(), parentQ = handWorldQ.clone();
+    const joints = [];
+    for (let i = 0; i < 3; i++) {
+      const fr = arr[i]; if (!fr) break;
+      const jointPos = parentPos.clone().add(fr.localPos.clone().applyQuaternion(parentQ));
+      joints.push(jointPos);
+      const d = Vv(pts, k[i+2]).sub(Vv(pts, k[i+1]));
+      let localQ;
+      if (d.lengthSq() < 1e-12) localQ = fr.restQ.clone();
+      else {
+        const localDir = toHand(d.normalize()).applyQuaternion(parentQ.clone().invert()).normalize();
+        localQ = new THREE.Quaternion().setFromUnitVectors(fr.fwdLocal, localDir);
+      }
+      parentQ = parentQ.clone().multiply(localQ);
+      parentPos = jointPos;
+    }
+    const last = arr[2] || arr[1] || arr[0];
+    joints.push(parentPos.clone().add(last.fwdLocal.clone().multiplyScalar(last.childLen).applyQuaternion(parentQ)));
+    fingers[f] = joints; // world positions [MCP, PIP, DIP, TIP]
+  }
+  return { arm: [S, E, Wuse], wrist: Wuse, fingers, rawBend, kink };
+}
+
 // ── real hand: project raw landmarks onto its own palm plane (across, finger) ──
 function realHand(pts) {
   const wrist = Rv(pts, 0);
@@ -212,7 +299,12 @@ function loadFrames(json) {
   for (const f of (json.frames || [])) {
     const rawRight = f.raw && f.raw.find(r => r.side === 'Right');
     const rawLeft = f.raw && f.raw.find(r => r.side === 'Left');
-    out.push({ Left: f.rW || rawRight?.w || null, Right: f.lW || rawLeft?.w || null });
+    // Side convention: retarget "Left" is driven by the signer's RIGHT hand (f.rW)
+    // and writes the avatar's Left* bones → f.arm.left. So Left↔{rW, arm.left}.
+    out.push({
+      Left: f.rW || rawRight?.w || null, Right: f.lW || rawLeft?.w || null,
+      armLeft: f.arm?.left || null, armRight: f.arm?.right || null,
+    });
   }
   return out;
 }
@@ -257,6 +349,34 @@ function drawPanel(png, box, proj2d, border) {
   }
 }
 
+// ── draw an arm model (shoulder→elbow→wrist + fingers) in one fixed-camera view ──
+// proj: Vector3 → [u,v]. FRONT=(x,y), SIDE=(z,y). Autoscales over arm+finger joints.
+function drawArmView(png, sub, model, proj) {
+  const { x, y, w, h } = sub;
+  const all = [...model.arm, ...Object.values(model.fingers).flat()].map(proj);
+  let minU=1e9,maxU=-1e9,minV=1e9,maxV=-1e9;
+  for (const [u,v] of all){ minU=Math.min(minU,u);maxU=Math.max(maxU,u);minV=Math.min(minV,v);maxV=Math.max(maxV,v); }
+  const pad=16, spanU=(maxU-minU)||1e-6, spanV=(maxV-minV)||1e-6;
+  const sc=Math.min((w-2*pad)/spanU,(h-2*pad)/spanV);
+  const cx=x+w/2, cy=y+h/2, mu=(minU+maxU)/2, mv=(minV+maxV)/2;
+  const P=(p)=>{ const [u,v]=proj(p); return [cx+(u-mu)*sc, cy-(v-mv)*sc]; }; // v up
+  const [Sp,Ep,Wp]=model.arm.map(P);
+  line(png,Sp[0],Sp[1],Ep[0],Ep[1],[130,130,140]); disc(png,Sp[0],Sp[1],4,[110,110,120]); // upper arm
+  line(png,Ep[0],Ep[1],Wp[0],Wp[1],[190,190,200]); disc(png,Ep[0],Ep[1],4,[110,110,120]); // forearm
+  disc(png,Wp[0],Wp[1],4,[235,235,235]);                                                   // wrist
+  for (const f of FINGERS){ if(!model.fingers[f])continue; const col=FCOLOR[f]; let prev=Wp;
+    for(const p of model.fingers[f]){ const q=P(p); line(png,prev[0],prev[1],q[0],q[1],col); disc(png,q[0],q[1],2,col); prev=q; } }
+}
+// one grid cell = FRONT view (top) over SIDE view (bottom); the SIDE view exposes the
+// forward forearm tilt / wrist kink that a front-only view foreshortens away.
+function drawArmCell(png, box, model, border) {
+  rect(png, box.x, box.y, box.w, box.h, border);
+  const halfH = Math.floor(box.h/2);
+  drawArmView(png, { x:box.x, y:box.y,        w:box.w, h:halfH },        model, p=>[p.x, p.y]); // FRONT
+  for (let i=4;i<box.w-4;i+=7) px(png, box.x+i, box.y+halfH, [70,70,82]);                        // divider
+  drawArmView(png, { x:box.x, y:box.y+halfH,  w:box.w, h:box.h-halfH },  model, p=>[p.z, p.y]); // SIDE
+}
+
 // ── main ──
 const [,, dumpPath, sideArg='Left', outArg] = process.argv;
 if (!dumpPath) { console.error('usage: node tools/hand_fk_preview.mjs <dump.json> [Left|Right] [out.png]'); process.exit(1); }
@@ -265,13 +385,15 @@ const out = outArg || `/tmp/hand_preview_${side}.png`;
 const json = JSON.parse(fs.readFileSync(dumpPath, 'utf8'));
 const vrm = loadVRM(VRM_PATH);
 const rig = measureRig(vrm, side);
-const frames = loadFrames(json).map(f => f[side]).filter(valid);
-console.log(`Loaded ${frames.length} valid "${side}" frames; rig fingerAxis=${rig.fingerAxis.toArray().map(n=>n.toFixed(2))}`);
+// frames carry the landmark array (.pts) + the captured avatar arm (.arm), if present.
+const frames = loadFrames(json).map(f => ({ pts: f[side], arm: side === 'Left' ? f.armLeft : f.armRight })).filter(x => valid(x.pts));
+const ARM_MODE = frames.some(x => x.arm && x.arm.la && x.arm.hand);
+console.log(`Loaded ${frames.length} valid "${side}" frames; arm-data=${ARM_MODE ? 'YES (wrist render)' : 'no (palm-on render)'}; rig fingerAxis=${rig.fingerAxis.toArray().map(n=>n.toFixed(2))}`);
 if (frames.length < 4) { console.error('too few frames'); process.exit(1); }
 
-// select representative poses
-const lowCurl = frames.filter(p => curlMean(p) < 0.5);
-const pick = (arr, key, dir) => arr.slice().sort((a,b)=> dir*(key(a)-key(b)))[0];
+// select representative poses (metrics take the landmark array)
+const lowCurl = frames.filter(x => curlMean(x.pts) < 0.5);
+const pick = (arr, key, dir) => arr.slice().sort((a,b)=> dir*(key(a.pts)-key(b.pts)))[0];
 const poses = [];
 if (lowCurl.length) {
   poses.push(['SPREAD',   pick(lowCurl, spreadMetric, -1)]);
@@ -279,26 +401,33 @@ if (lowCurl.length) {
 }
 poses.push(['FIST',  pick(frames, curlMean, -1)]);
 poses.push(['POINT', pick(frames, indexPointiness, -1)]);
-const open = pick(frames, p => Math.abs(curlMean(p)-0.3) , +1); poses.push(['OPEN', open]);
+poses.push(['OPEN',  pick(frames, pts => Math.abs(curlMean(pts)-0.3), +1)]);
 
-// layout: rows = poses, cols = [REAL, NOW, FIX]
-const PW = 300, PH = 300, MX = 16, MY = 16;
+// layout: rows = poses, cols = [REAL, NOW, FIX]. Arm cells are taller (FRONT+SIDE stack).
+const PW = 300, PH = ARM_MODE ? 520 : 300, MX = 16, MY = 16;
 const cols = ['REAL', 'NOW', 'FIX'];
 const colBorder = { REAL: [200,200,200], NOW: [220,60,60], FIX: [60,210,90] };
 const W = MX + cols.length*(PW+MX), H = MY + poses.length*(PH+MY);
 const png = canvas(W, H);
-poses.forEach(([label, pts], r) => {
-  const real = project(realHand(pts));
-  const now  = project(avatarHand(vrm, rig, side, pts, { fixAcross: false }));
-  const fix  = project(avatarHand(vrm, rig, side, pts, { fixAcross: true }));
-  const data = { REAL: real, NOW: now, FIX: fix };
-  cols.forEach((cn, ci) => {
-    const box = { x: MX + ci*(PW+MX), y: MY + r*(PH+MY), w: PW, h: PH };
-    drawPanel(png, box, data[cn], colBorder[cn]);
-  });
-  console.log(`row ${r} ${label.padEnd(9)} spread=${spreadMetric(pts).toFixed(2)} curl=${curlMean(pts).toFixed(2)}`);
+poses.forEach(([label, fr], r) => {
+  const { pts, arm } = fr;
+  const box = (ci) => ({ x: MX + ci*(PW+MX), y: MY + r*(PH+MY), w: PW, h: PH });
+  if (ARM_MODE && arm && arm.la && arm.hand) {
+    const real = avatarArmHand(vrm, rig, side, pts, arm, 'real');
+    const now  = avatarArmHand(vrm, rig, side, pts, arm, 'now');
+    const fix  = avatarArmHand(vrm, rig, side, pts, arm, 'fix');
+    const data = { REAL: real, NOW: now, FIX: fix };
+    cols.forEach((cn, ci) => drawArmCell(png, box(ci), data[cn], colBorder[cn]));
+    console.log(`row ${r} ${label.padEnd(9)} rawBend=${real.rawBend.toFixed(0)}°(=HUD)  NOWkink=${now.kink.toFixed(0)}°  FIXkink=${fix.kink.toFixed(0)}°`);
+  } else {
+    const data = { REAL: project(realHand(pts)), NOW: project(avatarHand(vrm, rig, side, pts, { fixAcross: false })), FIX: project(avatarHand(vrm, rig, side, pts, { fixAcross: true })) };
+    cols.forEach((cn, ci) => drawPanel(png, box(ci), data[cn], colBorder[cn]));
+    console.log(`row ${r} ${label.padEnd(9)} spread=${spreadMetric(pts).toFixed(2)} curl=${curlMean(pts).toFixed(2)}`);
+  }
 });
 fs.writeFileSync(out, PNG.sync.write(png));
 console.log(`\nGrid: rows = poses (top→bottom: ${poses.map(p=>p[0]).join(', ')})`);
-console.log(`      cols = REAL (white) | NOW current-math (red) | FIX candidate (green)`);
+console.log(ARM_MODE
+  ? `      cols = REAL hand+IK forearm | NOW deployed(0.6 blend) | FIX forearm-follows-hand;  each cell: FRONT (top) / SIDE (bottom).  PASS = FIX wrist straight (kink≈0).`
+  : `      cols = REAL (white) | NOW current-math (red) | FIX candidate (green)`);
 console.log(`Wrote ${out}`);
