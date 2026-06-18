@@ -177,6 +177,9 @@ export class SMPLXAvatar {
         L2: lowerVec.length() || 1e-4,
         upperRestAxis: upperVec.clone().normalize(),
         lowerRestAxis: lowerVec.clone().normalize(),
+        // Hand's bind-pose local rotation (relative to LowerArm). Lets the retarget orient
+        // the forearm so the hand sits at its natural relationship → no wrist twist.
+        handBindLocal: ha.quaternion.clone(),
       };
     }
   }
