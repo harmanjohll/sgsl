@@ -385,16 +385,17 @@ function drawArmCell(png, box, model, border) {
 }
 
 // ── main ──
-const [,, dumpPath, sideArg='Left', outArg] = process.argv;
-if (!dumpPath) { console.error('usage: node tools/hand_fk_preview.mjs <dump.json> [Left|Right] [out.png]'); process.exit(1); }
+const [,, dumpPath, sideArg='Left', outArg, srcArg] = process.argv;
+if (!dumpPath) { console.error('usage: node tools/hand_fk_preview.mjs <dump.json> [rigSide Left|Right] [out.png] [srcSide Left|Right]'); process.exit(1); }
 const side = sideArg;
+const srcSide = srcArg || side; // landmark source can differ from the rig side (chirality test)
 const out = outArg || `/tmp/hand_preview_${side}.png`;
 const json = JSON.parse(fs.readFileSync(dumpPath, 'utf8'));
 const vrm = loadVRM(VRM_PATH);
 const rig = measureRig(vrm, side);
 // frames carry the landmark array (.pts) + the captured avatar arm (.arm), if present.
-const frames = loadFrames(json).map(f => ({ pts: f[side], arm: side === 'Left' ? f.armLeft : f.armRight })).filter(x => valid(x.pts));
-const ARM_MODE = frames.some(x => x.arm && x.arm.la && x.arm.hand);
+const frames = loadFrames(json).map(f => ({ pts: f[srcSide], arm: side === 'Left' ? f.armLeft : f.armRight })).filter(x => valid(x.pts));
+const ARM_MODE = !srcArg && frames.some(x => x.arm && x.arm.la && x.arm.hand); // palm-on when src overridden
 console.log(`Loaded ${frames.length} valid "${side}" frames; arm-data=${ARM_MODE ? 'YES (wrist render)' : 'no (palm-on render)'}; rig fingerAxis=${rig.fingerAxis.toArray().map(n=>n.toFixed(2))}`);
 if (frames.length < 4) { console.error('too few frames'); process.exit(1); }
 

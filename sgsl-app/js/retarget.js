@@ -49,7 +49,7 @@ const ARM_HYSTERESIS_FRAMES = 5;
 // user's own shoulders (in shoulder-width units), so it's invariant to how
 // the user is framed/zoomed. This is what makes a hand raised above the
 // shoulders read as "raised" even when the shoulders sit low in the frame.
-const MIRROR_X = -1;         // screen-x → world-x direction (reflection mirror)
+const MIRROR_X = 1;          // anatomical copy (no left-right mirror); was -1 for the mirror config
 const FRONT_Z = 1;           // +1 = signing plane sits toward the camera
 const REACH_GAIN = 1.15;     // user shoulder-widths → avatar shoulder-widths
 const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
@@ -529,13 +529,14 @@ export class SMPLXRetarget {
     const faceLandmarks = results.faceLandmarks;
     const pose3DLandmarks = results.za || results.ea;
     const pose2DLandmarks = results.poseLandmarks;
-    // MediaPipe reports hands as the camera sees them; Kalidokit's
-    // demo swaps so "Left" refers to the signer's own left hand.
-    const leftHandLandmarks = results.rightHandLandmarks;
-    const rightHandLandmarks = results.leftHandLandmarks;
-    // 3D world landmarks (HandLandmarker), routed to the same signer sides.
-    const leftHandWorld = results.rightHandWorldLandmarks;
-    const rightHandWorld = results.leftHandWorldLandmarks;
+    // ANATOMICAL COPY (user chose "copy me, same actual hand"): the signer's OWN hand
+    // drives the SAME-SIDE avatar hand — no mirror — so the thumb/handedness match.
+    // Proven by chirality check: signer-right (+1) → avatar Right rig (+1); the old swap
+    // sent it to the Left rig (−1) = the mirror. (tools/hand_fk_preview.mjs)
+    const leftHandLandmarks = results.leftHandLandmarks;
+    const rightHandLandmarks = results.rightHandLandmarks;
+    const leftHandWorld = results.leftHandWorldLandmarks;
+    const rightHandWorld = results.rightHandWorldLandmarks;
 
     const solveOpts = this._video
       ? { runtime: "mediapipe", video: this._video }
