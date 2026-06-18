@@ -432,7 +432,7 @@ export class SMPLXRetarget {
    * the avatar's own shoulder world position — never a guessed arm depth.
    * `screen` is any landmark with {x,y}: the hand's wrist, or a pose wrist.
    */
-  _solveArmIK(vrm, side, screen, anchor) {
+  _solveArmIK(vrm, side, screen, anchor, skipForearm = false) {
     const rig = this._avatar?.armRig?.[side];
     if (!rig || !screen) return false;
     const BN = THREE.VRMSchema.HumanoidBoneName;
@@ -484,11 +484,15 @@ export class SMPLXRetarget {
     perp.normalize();
     const E = S.clone().add(axis.clone().multiplyScalar(a)).add(perp.multiplyScalar(h));
 
-    // Aim upper arm S→E, refresh its world matrix, then aim lower arm E→T.
+    // Aim upper arm S→E (places the elbow). When a 3D hand drives this side,
+    // _driveHand owns the forearm (re-aims it to follow the hand); aiming it at T
+    // here too would make the two slerps fight and leave the wrist knotted, so skip it.
     this._aimBone(ua, upperRestAxis, E.clone().sub(S));
     ua.updateWorldMatrix(true, true);
-    const Ew = la.getWorldPosition(new THREE.Vector3());
-    this._aimBone(la, lowerRestAxis, T.clone().sub(Ew));
+    if (!skipForearm) {
+      const Ew = la.getWorldPosition(new THREE.Vector3());
+      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew)); // forearm fallback when no 3D hand
+    }
     return true;
   }
 
@@ -572,13 +576,13 @@ export class SMPLXRetarget {
     vrm.scene.updateMatrixWorld(true);
 
     if (signerRightArmOn && rightTargetScreen) {
-      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor);
+      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21));
     } else if (this._avatar) {
       this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
 
     if (signerLeftArmOn && leftTargetScreen) {
-      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor);
+      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21));
     } else if (this._avatar) {
       this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
     }
