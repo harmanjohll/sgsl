@@ -166,6 +166,19 @@ function avatarHand(vrm, rig, side, pts, { fixAcross }) {
   return out;
 }
 
+// ── per-frame slerp model (predict the LIVE steady state, not the end-state) ──
+const ARM_IK_LERP = 0.45; // retarget.js
+function slerpDir(a, b, t) {
+  const an = a.clone().normalize(), bn = b.clone().normalize();
+  const d = Math.max(-1, Math.min(1, an.dot(bn))), th = Math.acos(d);
+  if (th < 1e-6) return an;
+  const s = Math.sin(th);
+  return an.multiplyScalar(Math.sin((1-t)*th)/s).add(bn.multiplyScalar(Math.sin(t*th)/s)).normalize();
+}
+// Deployed NOW: _solveArmIK slerps the forearm→Tdir each frame, then _driveHand slerps it
+// →Fdir — two equal pulls fight to a steady state BETWEEN them (the residual knot).
+function eqForearmDueling(Tdir, Fdir) { let x = Tdir.clone(); for (let i=0;i<200;i++){ x = slerpDir(x, Tdir, ARM_IK_LERP); x = slerpDir(x, Fdir, ARM_IK_LERP); } return x; }
+
 // ── arm-aware _driveHand: orient the hand anchored at the CAPTURED avatar wrist and
 //    FK fingers in avatar-WORLD, alongside the captured arm S→E→W. Three modes:
 //      real — true 3D hand orientation on the captured (IK) forearm → shows the raw seam
@@ -193,22 +206,16 @@ function avatarArmHand(vrm, rig, side, pts, arm, mode) {
   const deg = (u, v) => Math.acos(Math.max(-1, Math.min(1, u.dot(v)))) * 180 / Math.PI;
   const rawBend = deg(fingerDirReal, fwdN); // real hand vs captured forearm (= live HUD bend)
 
-  let fingerDir, palmNormal, Wuse;
-  if (mode === 'now') {                                  // current deployed: WRIST_STRAIGHTEN=0.6
-    fingerDir = fingerDirReal.clone().lerp(fwdN, 0.6).normalize();
-    palmNormal = palmFrom(fingerDir);
-    Wuse = W.clone();
-  } else if (mode === 'fix') {                            // forearm follows the hand
-    fingerDir = fingerDirReal.clone();
-    palmNormal = palmReal.clone();
-    Wuse = E.clone().add(fingerDirReal.clone().multiplyScalar(L2));
-  } else {                                                // real
-    fingerDir = fingerDirReal.clone();
-    palmNormal = palmReal.clone();
-    Wuse = W.clone();
-  }
-  const armFwd = Wuse.clone().sub(E);
-  const kink = armFwd.lengthSq() > 1e-9 ? deg(fingerDir, armFwd.normalize()) : 0; // rendered wrist kink
+  // The hand keeps its true 3D orientation in ALL columns (the deployed code no longer
+  // blends it); only the FOREARM direction differs by pipeline stage, moving the wrist anchor.
+  const fingerDir = fingerDirReal.clone();
+  const palmNormal = palmReal.clone();
+  let armDir;
+  if (mode === 'now')      armDir = eqForearmDueling(fwdN, fingerDirReal); // deployed: solveArmIK vs driveHand tug-of-war
+  else if (mode === 'fix') armDir = fingerDirReal.clone();                 // fixed: driveHand alone owns the forearm
+  else                     armDir = fwdN.clone();                          // real: the captured IK forearm (raw seam)
+  const Wuse = E.clone().add(armDir.clone().multiplyScalar(L2));
+  const kink = deg(fingerDir, armDir); // rendered wrist kink (steady state)
 
   // hand world orientation (parent-independent) + the exact toHand frame from avatarHand
   const qRest = basisQuat(rig.fingerAxis, rig.palmAxis);
@@ -428,6 +435,6 @@ poses.forEach(([label, fr], r) => {
 fs.writeFileSync(out, PNG.sync.write(png));
 console.log(`\nGrid: rows = poses (top→bottom: ${poses.map(p=>p[0]).join(', ')})`);
 console.log(ARM_MODE
-  ? `      cols = REAL hand+IK forearm | NOW deployed(0.6 blend) | FIX forearm-follows-hand;  each cell: FRONT (top) / SIDE (bottom).  PASS = FIX wrist straight (kink≈0).`
+  ? `      cols = REAL hand+IK forearm | NOW deployed(forearm tug-of-war) | FIX forearm-follows-hand (solveArmIK skips forearm);  each cell: FRONT (top) / SIDE (bottom).  PASS = FIX wrist straight (kink≈0).`
   : `      cols = REAL (white) | NOW current-math (red) | FIX candidate (green)`);
 console.log(`Wrote ${out}`);
