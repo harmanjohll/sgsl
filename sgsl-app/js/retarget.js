@@ -316,36 +316,10 @@ export class SMPLXRetarget {
     if (!hand) return;
     const V = (i) => new THREE.Vector3(world[i].x * HAND_WX, world[i].y * HAND_WY, world[i].z * HAND_WZ);
 
-    // Hand orientation (palm facing).
+    // Hand orientation (palm facing). Compute fingerDir + palmNormal FIRST so the forearm
+    // can be oriented palm-aware (matching the hand's roll → no wrist twist).
     const wrist = V(0);
     const fingerDir = V(9).sub(wrist).normalize();
-    // Re-aim the FOREARM to follow the real 3D hand so the wrist stays straight (no
-    // pinch), keeping fingerDir (the hand orientation) untouched. The elbow placement
-    // from _solveArmIK is preserved — only the forearm's final rotation is overwritten.
-    const lowerArm = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
-    const armRig = this._avatar?.armRig?.[side];
-    let wristBend = 0;
-    if (lowerArm) {
-      const fwd = hand.getWorldPosition(new THREE.Vector3())
-        .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
-      if (fwd.lengthSq() > 1e-9) {
-        fwd.normalize();
-        wristBend = Math.acos(clampNum(fingerDir.dot(fwd), -1, 1)) * 180 / Math.PI; // raw seam
-        if (armRig) {
-          // Clamp the swing from the IK forearm dir toward the hand (bad-frame backstop),
-          // blend by STRAIGHT_GAIN, then aim the forearm there.
-          let target = fingerDir.clone();
-          const swing = Math.acos(clampNum(fwd.dot(fingerDir), -1, 1));
-          if (swing > WRIST_SWING_CAP) target.copy(fwd).lerp(fingerDir, WRIST_SWING_CAP / swing).normalize();
-          const aim = fwd.clone().lerp(target, STRAIGHT_GAIN).normalize();
-          this._aimBone(lowerArm, armRig.lowerRestAxis, aim, ARM_IK_LERP);
-          lowerArm.updateWorldMatrix(true, true); // also refreshes the Hand (child) world transform
-          const res = hand.getWorldPosition(new THREE.Vector3())
-            .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
-          if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI; // residual (HUD sentinel)
-        }
-      }
-    }
     // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),
     // with the reflection-determinant correction so it matches the rest basis.
     const palmNormal = new THREE.Vector3()
@@ -359,9 +333,27 @@ export class SMPLXRetarget {
     if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
     const desired = this._handFacing[side];
     if (desired !== 0 && Math.sign(palmNormal.z || 0) !== desired) palmNormal.negate();
-    // Experiment: 180° roll about the forearm axis (applied after the facing override so
-    // it isn't immediately re-corrected). The finger toHand frame follows palmNormal.
-    if (WRIST_ROLL_PI) palmNormal.negate();
+
+    // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
+    const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
+    const qHandWorld = this._basisQuat(fingerDir, palmNormal).multiply(qRestHand.clone().invert());
+
+    // Orient the FOREARM so the Hand sits at its BIND relationship — fixes BOTH the wrist
+    // bend AND the TWIST: lowerArm_world = qHandWorld · handBindLocal⁻¹ ⇒ hand_local ≈ bind.
+    // (Old code aimed the forearm roll-free, matching only fingerDir, so the hand barrel-
+    // rolled ~120° about the forearm — measured on dump_12. Verified with hand_fk_preview.)
+    const lowerArm = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    const armRig = this._avatar?.armRig?.[side];
+    let wristBend = 0;
+    if (lowerArm && lowerArm.parent && armRig && armRig.handBindLocal) {
+      const qLowerWorld = qHandWorld.clone().multiply(armRig.handBindLocal.clone().invert());
+      const pInv = lowerArm.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), ARM_IK_LERP);
+      lowerArm.updateWorldMatrix(true, true); // refresh the Hand (child) world transform too
+      const res = hand.getWorldPosition(new THREE.Vector3())
+        .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
+      if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI;
+    }
 
     this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
     hand.updateWorldMatrix(true, true);
