@@ -82,7 +82,7 @@ const WRIST_SWING_CAP = 80 * Math.PI / 180;
 // Experiment: roll the whole hand 180° about the forearm (fingerDir) axis. Negating
 // palmNormal flips both the palm-normal (Z) and across (X) of the hand basis, i.e. a
 // 180° rotation about fingerDir; the finger toHand frame follows automatically.
-const WRIST_ROLL_PI = true;
+const WRIST_ROLL_PI = false;
 // Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
 // is aimed along its real landmark segment, re-expressed in the avatar's hand
 // frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
@@ -418,7 +418,19 @@ export class SMPLXRetarget {
       for (const nm of names) for (const a of angDeg[nm]) { s += a; n++; }
       return n ? (s / n) * 180 / Math.PI : 0;
     };
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(meanDeg(['Index', 'Middle', 'Ring', 'Little'])), thumb: Math.round(meanDeg(['Thumb'])), bend: Math.round(wristBend), wind: +wind.toFixed(2) };
+    // Wrist TWIST: how much the hand is rolled about the forearm axis relative to the
+    // LowerArm (swing-twist decomposition). At bend≈0 this is the remaining "knot".
+    let roll = 0;
+    if (lowerArm && armRig) {
+      const qL = lowerArm.getWorldQuaternion(new THREE.Quaternion()).invert()
+        .multiply(hand.getWorldQuaternion(new THREE.Quaternion()));
+      const ax = armRig.lowerRestAxis; // forearm (twist) axis in LowerArm-local frame
+      const d = qL.x * ax.x + qL.y * ax.y + qL.z * ax.z;
+      const tw = new THREE.Quaternion(ax.x * d, ax.y * d, ax.z * d, qL.w).normalize();
+      roll = 2 * Math.acos(Math.min(1, Math.abs(tw.w))) * 180 / Math.PI;
+      if (roll > 180) roll = 360 - roll;
+    }
+    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(meanDeg(['Index', 'Middle', 'Ring', 'Little'])), thumb: Math.round(meanDeg(['Thumb'])), bend: Math.round(wristBend), roll: Math.round(roll), wind: +wind.toFixed(2) };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -635,7 +647,7 @@ export class SMPLXRetarget {
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
     const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
     const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
-    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° thumb:${this._handDbg[s].thumb}° bend:${this._handDbg[s].bend}°` : 'face:— curl:— thumb:— bend:—';
+    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° thumb:${this._handDbg[s].thumb}° bend:${this._handDbg[s].bend}° roll:${this._handDbg[s].roll}°` : 'face:— curl:— thumb:— bend:— roll:—';
     this._lastDebug =
         `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`

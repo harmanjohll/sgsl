@@ -198,16 +198,31 @@ let pendingArmFrame = null;     // dump frame awaiting its avatar arm state (fil
 // The hand is driven from 3D landmarks but the forearm is placed by the 2D arm-IK;
 // the wrist bends/pinches at their junction, which the hand-only landmarks can't
 // show — so we capture the arm so tools/hand_fk_preview.mjs can render the wrist.
+// World rotation quaternion [x,y,z,w] from a Matrix4's elements (column-major), with
+// per-column scale removed. Lets us capture forearm/hand ROLL without a THREE import,
+// so tools/hand_fk_preview.mjs can render the wrist TWIST, not just the bend.
+function quatFromElements(e) {
+  let m00 = e[0], m01 = e[4], m02 = e[8], m10 = e[1], m11 = e[5], m12 = e[9], m20 = e[2], m21 = e[6], m22 = e[10];
+  const lx = Math.hypot(m00, m10, m20) || 1, ly = Math.hypot(m01, m11, m21) || 1, lz = Math.hypot(m02, m12, m22) || 1;
+  m00 /= lx; m10 /= lx; m20 /= lx; m01 /= ly; m11 /= ly; m21 /= ly; m02 /= lz; m12 /= lz; m22 /= lz;
+  const tr = m00 + m11 + m22; let x, y, z, w;
+  if (tr > 0) { const s = 0.5 / Math.sqrt(tr + 1); w = 0.25 / s; x = (m21 - m12) * s; y = (m02 - m20) * s; z = (m10 - m01) * s; }
+  else if (m00 > m11 && m00 > m22) { const s = 2 * Math.sqrt(1 + m00 - m11 - m22); w = (m21 - m12) / s; x = 0.25 * s; y = (m01 + m10) / s; z = (m02 + m20) / s; }
+  else if (m11 > m22) { const s = 2 * Math.sqrt(1 + m11 - m00 - m22); w = (m02 - m20) / s; x = (m01 + m10) / s; y = 0.25 * s; z = (m12 + m21) / s; }
+  else { const s = 2 * Math.sqrt(1 + m22 - m00 - m11); w = (m10 - m01) / s; x = (m02 + m20) / s; y = (m12 + m21) / s; z = 0.25 * s; }
+  return [+x.toFixed(4), +y.toFixed(4), +z.toFixed(4), +w.toFixed(4)];
+}
 function armWorld(vrm) {
   if (!vrm?.humanoid) return null;
-  const pos = (nm) => {
-    const b = vrm.humanoid.getBoneNode(nm);
-    if (!b) return null;
-    const e = b.matrixWorld.elements; // world translation = elements[12..14]
-    return [+e[12].toFixed(4), +e[13].toFixed(4), +e[14].toFixed(4)];
-  };
+  const node = (nm) => vrm.humanoid.getBoneNode(nm);
+  const pos = (b) => { if (!b) return null; const e = b.matrixWorld.elements; return [+e[12].toFixed(4), +e[13].toFixed(4), +e[14].toFixed(4)]; };
+  const quat = (b) => b ? quatFromElements(b.matrixWorld.elements) : null;
   const out = {};
-  for (const s of ['left', 'right']) out[s] = { ua: pos(s + 'UpperArm'), la: pos(s + 'LowerArm'), hand: pos(s + 'Hand') };
+  for (const s of ['left', 'right']) {
+    const ua = node(s + 'UpperArm'), la = node(s + 'LowerArm'), hand = node(s + 'Hand');
+    // positions (ua/la/hand) + world rotations of forearm + hand (laq/handq) for TWIST.
+    out[s] = { ua: pos(ua), la: pos(la), hand: pos(hand), laq: quat(la), handq: quat(hand) };
+  }
   return out;
 }
 const DUMP_MS = 30000, DUMP_INTERVAL = 150; // ~6.7 fps
@@ -260,7 +275,7 @@ function stopHandDump() {
     setRecStatus('⚠ No hands captured — nothing to send. Raise your hand so the avatar mirrors it in 3D (overlay "world R/L: y") BEFORE clicking Dump, then retry.', 'error');
     return;
   }
-  const payload = { kind: 'sgsl-hand-dump', version: 2, interval_ms: DUMP_INTERVAL, frames: dumpFrames };
+  const payload = { kind: 'sgsl-hand-dump', version: 3, interval_ms: DUMP_INTERVAL, frames: dumpFrames };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
