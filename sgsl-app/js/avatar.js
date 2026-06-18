@@ -49,7 +49,7 @@ export class SMPLXAvatar {
     this.container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 1000);
-    this.camera.position.set(0.0, 1.35, 1.8);
+    this.camera.position.set(0.0, 1.35, 2.3); // pulled back so the full body fits without zooming
 
     this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
     this.controls.screenSpacePanning = true;
