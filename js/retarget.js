@@ -79,6 +79,10 @@ const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
 // (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
 const STRAIGHT_GAIN = 1.0;
 const WRIST_SWING_CAP = 80 * Math.PI / 180;
+// Experiment: roll the whole hand 180° about the forearm (fingerDir) axis. Negating
+// palmNormal flips both the palm-normal (Z) and across (X) of the hand basis, i.e. a
+// 180° rotation about fingerDir; the finger toHand frame follows automatically.
+const WRIST_ROLL_PI = true;
 // Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
 // is aimed along its real landmark segment, re-expressed in the avatar's hand
 // frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
@@ -120,6 +124,10 @@ export class SMPLXRetarget {
     this._handFacing = { Right: 0, Left: 0 };
     // Optional per-signer finger calibration {Left|Right: {finger:[{rest,max}×3]}}.
     this._handCalib = null;
+    // Body calibration baseline from "Calibrate (arms at sides)" — a STABLE reach
+    // anchor (shoulder midpoint + width) so the mapping doesn't drift with the live
+    // pose when an arm raises. Set via setCalibration(); null = use the live anchor.
+    this._calib = null;
   }
   reset() {
     oldLookTarget = new THREE.Euler();
@@ -351,6 +359,9 @@ export class SMPLXRetarget {
     if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
     const desired = this._handFacing[side];
     if (desired !== 0 && Math.sign(palmNormal.z || 0) !== desired) palmNormal.negate();
+    // Experiment: 180° roll about the forearm axis (applied after the facing override so
+    // it isn't immediately re-corrected). The finger toHand frame follows palmNormal.
+    if (WRIST_ROLL_PI) palmNormal.negate();
 
     this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
     hand.updateWorldMatrix(true, true);
@@ -412,7 +423,18 @@ export class SMPLXRetarget {
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
    *  prefer the shoulder midpoint + shoulder width; fall back to the nose. */
+  /** Store the "Calibrate (arms at sides)" baseline so the reach anchor is STABLE
+   *  (vs. recomputing from the jittery live pose every frame). Pass null to clear. */
+  setCalibration(c) {
+    this._calib = (c && c.shoulderMid && c.shoulderWidth > 0.05)
+      ? { x: c.shoulderMid[0], y: c.shoulderMid[1], scale: c.shoulderWidth }
+      : null;
+  }
+
   _bodyAnchor(pose2D) {
+    // Calibrated anchor wins: a fixed shoulder midpoint + width captured at rest, so the
+    // reach reference doesn't drift when the live pose shifts (raised arm, jitter).
+    if (this._calib) return this._calib;
     const L = pose2D?.[11], R = pose2D?.[12];
     if (L && R && (L.visibility ?? 1) > 0.3 && (R.visibility ?? 1) > 0.3) {
       return {

@@ -438,6 +438,9 @@ function finishCalibration() {
     capturedAt: new Date().toISOString(),
   };
   calibBuf = [];
+  // Feed the baseline to the retarget so the reach anchor is STABLE (vs. recomputing
+  // from the live pose every frame, which drifts when an arm raises).
+  retarget?.setCalibration?.(calibBaseline);
   setRecStatus('Calibration captured. You can record now.', 'success');
   updateFramingGate(latestFraming);  // re-enable record button
 }
