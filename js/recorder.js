@@ -391,16 +391,23 @@ function extractFrame(results) {
 
 // ─── Framing gate ───────────────────────────────────────────
 function updateFramingGate(fr) {
-  if (fr?.ok) framingStreak++; else framingStreak = 0;
-  framingOk = framingStreak >= FRAMING_STREAK_REQUIRED;
+  // Leaky streak + hysteresis. The old `else streak = 0` hard-reset meant a SINGLE
+  // jittery frame (or one check momentarily at its threshold edge) wiped a good streak
+  // to zero, so the badge never turned green ("stuck"). Climb by 1 on good frames
+  // (capped), decay by 2 on bad ones, and latch: green at the requirement, only drop
+  // well below it — robust to jitter, but sustained bad framing still fails.
+  if (fr?.ok) framingStreak = Math.min(FRAMING_STREAK_REQUIRED + 10, framingStreak + 1);
+  else framingStreak = Math.max(0, framingStreak - 2);
+  if (framingStreak >= FRAMING_STREAK_REQUIRED) framingOk = true;
+  else if (framingStreak <= FRAMING_STREAK_REQUIRED * 0.4) framingOk = false;
 
   // Surface state.
   const fel = document.getElementById('rec-framing');
   if (fel) {
     const pct = Math.round((fr?.score ?? 0) * 100);
     fel.textContent = `Framing: ${pct}%`
-      + (fr?.ok
-          ? ` • ready in ${Math.max(0, FRAMING_STREAK_REQUIRED - framingStreak)}`
+      + (framingOk ? ' • ready'
+          : fr?.ok ? ` • hold steady (${Math.max(0, FRAMING_STREAK_REQUIRED - framingStreak)})`
           : (fr?.reasons?.length ? ` • ${fr.reasons[0]}` : ''));
     fel.className = 'framing-badge ' + (framingOk ? 'ok' : (fr?.ok ? 'warming' : 'bad'));
   }
