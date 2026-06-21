@@ -330,9 +330,17 @@ export class SMPLXRetarget {
     const a = V(5).sub(V(0)), b = V(17).sub(V(0));
     const windRaw = a.x * b.y - a.y * b.x;
     const wind = windRaw / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) + 1e-9);
-    if (Math.abs(wind) > WIND_THRESH) this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
-    const desired = this._handFacing[side];
-    if (desired !== 0 && Math.sign(palmNormal.z || 0) !== desired) palmNormal.negate();
+    // Only correct the palm-vs-back SIGN when the winding is CONFIDENT (|wind|>thresh).
+    // In the edge-on dead zone the raw 3D normal is reliable (and small in z anyway), so
+    // applying a STALE held sign there pins the palm to the wrong side as it rotates past
+    // edge-on — the "B palm faces the wrong way" bug. Verified on handdump_14 via
+    // tools/palm_facing_probe.mjs: 21 dead-zone frames where the old persistent hold
+    // negated a CORRECT raw normal (and 0 confident frames change), so trust the geometry
+    // there. The winding override still protects against MP-z flips when it's confident.
+    if (Math.abs(wind) > WIND_THRESH) {
+      this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
+      if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
+    }
 
     // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
     const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
