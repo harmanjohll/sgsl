@@ -41,7 +41,10 @@ const angBetween = (a, b) => deg(Math.acos(Math.max(-1, Math.min(1, dot(norm(a),
 // V(): retarget.js maps MP-world → avatar space by negating every axis.
 const V = (pts, i) => [pts[i][0]*HAND_W[0], pts[i][1]*HAND_W[1], pts[i][2]*HAND_W[2]];
 
-// Winding override sign (retarget.js:329-334). Returns desired facing ∈ {-1,0,+1}.
+// Winding override sign (retarget.js). Stateless: returns 0 in the edge-on dead zone
+// (|wind|<=thresh) so the raw 3D normal is trusted there — matching the FIXED live logic
+// that only applies the palm-vs-back sign correction when the winding is confident.
+// Returns desired facing ∈ {-1,0,+1}.
 function windingFacing(pts, side) {
   const w = V(pts, 0), a = sub(V(pts, 5), w), b = sub(V(pts, 17), w);
   const windRaw = a[0]*b[1] - a[1]*b[0];

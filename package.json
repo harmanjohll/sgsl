@@ -1,6 +1,7 @@
 {
   "name": "sgsl-tools",
   "private": true,
+  "type": "module",
   "description": "Local dev dependencies for the offline avatar-hand tooling (not shipped to the web app). See tools/hand_fk_preview.mjs and tools/palm_facing_probe.mjs.",
   "devDependencies": {
     "three": "0.133.0",
