@@ -79,10 +79,13 @@ const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
 // (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
 const STRAIGHT_GAIN = 1.0;
 const WRIST_SWING_CAP = 80 * Math.PI / 180;
-// Experiment: roll the whole hand 180° about the forearm (fingerDir) axis. Negating
-// palmNormal flips both the palm-normal (Z) and across (X) of the hand basis, i.e. a
-// 180° rotation about fingerDir; the finger toHand frame follows automatically.
-const WRIST_ROLL_PI = false;
+// Roll the whole hand 180° about the forearm (fingerDir) axis. The raw palm basis
+// renders the palm inverted front/back (signer's palm toward their own face → avatar
+// palm AWAY from its face). Negating palmNormal flips both the palm-normal (Z) and the
+// across (X) of the hand basis, i.e. a true 180° rotation about fingerDir (a wrist roll,
+// NOT a mirror) — so the fingers/thumb follow consistently. Applied AFTER the winding
+// override (below) so the override can't undo it.
+const WRIST_ROLL_PI = true;
 // Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
 // is aimed along its real landmark segment, re-expressed in the avatar's hand
 // frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
@@ -341,6 +344,8 @@ export class SMPLXRetarget {
       this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
       if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
     }
+    // 180° wrist roll so the palm faces the same way the signer's does (see WRIST_ROLL_PI).
+    if (WRIST_ROLL_PI) palmNormal.negate();
 
     // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
     const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
