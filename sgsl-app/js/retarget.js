@@ -131,8 +131,9 @@ export class SMPLXRetarget {
     // anchor (shoulder midpoint + width) so the mapping doesn't drift with the live
     // pose when an arm raises. Set via setCalibration(); null = use the live anchor.
     this._calib = null;
-    // Manual hand-orientation calibration (user slider) — palm roll about the finger axis.
-    this._orientCalib = { rollDeg: DEFAULT_ROLL_DEG };
+    // Manual hand-orientation calibration (user sliders) — roll/pitch/yaw about the hand's
+    // own axes (finger / across / palm-normal). Defaults reproduce the current render.
+    this._orientCalib = { rollDeg: DEFAULT_ROLL_DEG, pitchDeg: 0, yawDeg: 0 };
     // Stability: 0 = responsive (the original slerp rates), 1 = very smooth (more lag).
     // Effective per-frame slerp amounts derived from it; defaults reproduce the originals.
     this._smoothing = 0;
@@ -140,10 +141,14 @@ export class SMPLXRetarget {
     this._armLerp = ARM_IK_LERP;
   }
 
-  /** Manual palm-rotation calibration in degrees about the finger axis (slider).
-   *  180 = the default front/back wrist roll; lets the user correct palm facing by eye. */
+  /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
+   *  the across axis (tilt forward/back), yaw about the palm normal (deviation). Any subset.
+   *  180/0/0 = the default front/back wrist roll; lets the user correct the hand by eye. */
   setOrientationCalibration(c) {
-    if (c && typeof c.rollDeg === 'number' && isFinite(c.rollDeg)) this._orientCalib.rollDeg = c.rollDeg;
+    if (!c) return;
+    for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) {
+      if (typeof c[k] === 'number' && isFinite(c[k])) this._orientCalib[k] = c[k];
+    }
   }
 
   /** Stability slider 0..1 → smaller per-frame slerp = more temporal smoothing (more lag).
@@ -160,7 +165,10 @@ export class SMPLXRetarget {
   getMetrics() {
     return {
       Right: this._handDbg.Right, Left: this._handDbg.Left,
-      calibration: { rollDeg: this._orientCalib.rollDeg, smoothing: this._smoothing },
+      calibration: {
+        rollDeg: this._orientCalib.rollDeg, pitchDeg: this._orientCalib.pitchDeg,
+        yawDeg: this._orientCalib.yawDeg, smoothing: this._smoothing,
+      },
     };
   }
   reset() {
@@ -375,11 +383,19 @@ export class SMPLXRetarget {
       this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
       if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
     }
-    // Manual palm-rotation calibration: roll the hand about the finger axis by the user-set
-    // angle (default 180° = the front/back wrist roll). Since palmNormal ⊥ fingerDir, 180° is
-    // exactly negation (unchanged default). Applied here so the forearm + finger frame follow.
-    const rollRad = (this._orientCalib.rollDeg || 0) * Math.PI / 180;
-    if (rollRad) palmNormal.applyAxisAngle(fingerDir, rollRad);
+    // Manual 3-DOF orientation calibration on the measured hand basis (X=across, Y=finger,
+    // Z=palm normal): roll about Y, pitch about X (tilt forward/back), yaw about Z. Applied
+    // here (before qHandWorld) so the forearm + finger frame follow. Default {180,0,0} is a
+    // π rotation about Y → fingerDir unchanged, palmNormal flipped = exactly the old negate.
+    const oc = this._orientCalib;
+    if (oc.rollDeg || oc.pitchDeg || oc.yawDeg) {
+      const D = Math.PI / 180;
+      const qC = this._basisQuat(fingerDir, palmNormal).multiply(
+        new THREE.Quaternion().setFromEuler(
+          new THREE.Euler((oc.pitchDeg || 0) * D, (oc.rollDeg || 0) * D, (oc.yawDeg || 0) * D, 'YXZ')));
+      fingerDir.set(0, 1, 0).applyQuaternion(qC).normalize();
+      palmNormal.set(0, 0, 1).applyQuaternion(qC).normalize();
+    }
 
     // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
     const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
@@ -469,7 +485,14 @@ export class SMPLXRetarget {
       roll = 2 * Math.acos(Math.min(1, Math.abs(tw.w))) * 180 / Math.PI;
       if (roll > 180) roll = 360 - roll;
     }
-    this._handDbg[side] = { facing: +palmNormal.z.toFixed(2), curl: Math.round(meanDeg(['Index', 'Middle', 'Ring', 'Little'])), thumb: Math.round(meanDeg(['Thumb'])), bend: Math.round(wristBend), roll: Math.round(roll), wind: +wind.toFixed(2) };
+    this._handDbg[side] = {
+      facing: +palmNormal.z.toFixed(2),
+      palmN: [+palmNormal.x.toFixed(2), +palmNormal.y.toFixed(2), +palmNormal.z.toFixed(2)],
+      tiltZ: +fingerDir.z.toFixed(2),
+      curl: Math.round(meanDeg(['Index', 'Middle', 'Ring', 'Little'])),
+      thumb: Math.round(meanDeg(['Thumb'])), bend: Math.round(wristBend), roll: Math.round(roll),
+      wind: +wind.toFixed(2),
+    };
   }
 
   /** User body anchor (image space) for framing-invariant wrist mapping:
@@ -687,9 +710,13 @@ export class SMPLXRetarget {
     const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
     const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
     const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
-    const hd = (s) => this._handDbg[s] ? `face:${this._handDbg[s].facing} wind:${this._handDbg[s].wind} curl:${this._handDbg[s].curl}° thumb:${this._handDbg[s].thumb}° bend:${this._handDbg[s].bend}° roll:${this._handDbg[s].roll}°` : 'face:— curl:— thumb:— bend:— roll:—';
+    const hd = (s) => { const d = this._handDbg[s];
+      return d ? `face:${d.facing} palmN:[${d.palmN.join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°`
+               : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
+    const oc = this._orientCalib;
     this._lastDebug =
-        `Frame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
+        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}° smoothing:${Math.round(this._smoothing * 100)}%`
+      + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
       + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'} tgt:${fmt(rightTargetScreen)} | hand:${rSrc} ${hd('Right')}`;

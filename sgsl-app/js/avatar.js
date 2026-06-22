@@ -50,7 +50,9 @@ export class SMPLXAvatar {
     this.container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 1000);
-    this.camera.position.set(0.0, 1.35, 2.3); // pulled back so the full body fits without zooming
+    this.camera.position.set(0.0, 1.3, 2.85); // pulled back further so Fumi is smaller and the full body fits
+    // (shrinks Fumi via camera distance, not vrm.scene.scale — scaling the model would desync
+    //  _solveArmIK, which mixes unscaled bone lengths L1/L2 with scaled world target distances.)
 
     this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
     this.controls.screenSpacePanning = true;
