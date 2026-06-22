@@ -139,6 +139,13 @@ export class SMPLXRetarget {
     this._smoothing = 0;
     this._handLerp = HAND_LERP;
     this._armLerp = ARM_IK_LERP;
+    // Finger/thumb shaping + reach (user sliders). Defaults are identities (no-op): gains 1,
+    // thumb 0°, reach = the original BOX_DEPTH / REACH_GAIN constants.
+    this._curlGain = 1;      // scales finger bend toward the palm (handshape tightness)
+    this._spreadGain = 1;    // scales lateral finger splay
+    this._thumbDeg = 0;      // swings the thumb across the palm (abduction/adduction)
+    this._reachDepth = BOX_DEPTH;   // signing-plane forward distance
+    this._reachGain = REACH_GAIN;   // arm-reach scale (extension)
   }
 
   /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
@@ -149,6 +156,23 @@ export class SMPLXRetarget {
     for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) {
       if (typeof c[k] === 'number' && isFinite(c[k])) this._orientCalib[k] = c[k];
     }
+  }
+
+  /** Finger/thumb shaping: curlGain (bend toward palm), spreadGain (lateral splay), thumbDeg
+   *  (thumb abduction across the palm). Any subset; defaults 1/1/0 are no-ops. */
+  setFingerCalibration(c) {
+    if (!c) return;
+    if (typeof c.curlGain === 'number' && isFinite(c.curlGain)) this._curlGain = c.curlGain;
+    if (typeof c.spreadGain === 'number' && isFinite(c.spreadGain)) this._spreadGain = c.spreadGain;
+    if (typeof c.thumbDeg === 'number' && isFinite(c.thumbDeg)) this._thumbDeg = c.thumbDeg;
+  }
+
+  /** Reach: depth (forward signing-plane distance, = BOX_DEPTH) + gain (arm extension,
+   *  = REACH_GAIN). Any subset; defaults reproduce the original constants. */
+  setReach(c) {
+    if (!c) return;
+    if (typeof c.depth === 'number' && isFinite(c.depth)) this._reachDepth = c.depth;
+    if (typeof c.gain === 'number' && isFinite(c.gain)) this._reachGain = c.gain;
   }
 
   /** Stability slider 0..1 → smaller per-frame slerp = more temporal smoothing (more lag).
@@ -167,7 +191,10 @@ export class SMPLXRetarget {
       Right: this._handDbg.Right, Left: this._handDbg.Left,
       calibration: {
         rollDeg: this._orientCalib.rollDeg, pitchDeg: this._orientCalib.pitchDeg,
-        yawDeg: this._orientCalib.yawDeg, smoothing: this._smoothing,
+        yawDeg: this._orientCalib.yawDeg,
+        curlGain: this._curlGain, spreadGain: this._spreadGain, thumbDeg: this._thumbDeg,
+        reachDepth: this._reachDepth, reachGain: this._reachGain,
+        smoothing: this._smoothing,
       },
     };
   }
@@ -446,14 +473,18 @@ export class SMPLXRetarget {
     // (HAND_W = -1,-1,-1, det = HAND_DET): palmNormal is sign-corrected by HAND_DET but
     // the across axis is not, so without this factor splay inverts (spread↔together) and
     // the thumb folds the wrong way. Verified visually with tools/hand_fk_preview.mjs.
+    // User shaping: spreadGain scales the across (splay) term, curlGain the palm-normal (bend)
+    // term. Defaults 1/1 leave the direct aim untouched; straight segments (dot≈0) are unaffected.
     const toHand = (d) => new THREE.Vector3()
-      .addScaledVector(Xa, HAND_DET * d.dot(Xm))
+      .addScaledVector(Xa, HAND_DET * d.dot(Xm) * this._spreadGain)
       .addScaledVector(Ya, d.dot(Ym))
-      .addScaledVector(Za, d.dot(Zm));
+      .addScaledVector(Za, d.dot(Zm) * this._curlGain);
+    const thumbRad = this._thumbDeg * Math.PI / 180; // thumb abduction about the palm normal (Za)
     for (const f of FINGER_NAMES) {
       const arr = rig.fingers[f];
       if (!arr) continue;
       const k = FINGER_SEG[f]; // [wrist, mcp, pip, dip, tip]
+      const swing = (f === 'Thumb' && thumbRad) ? thumbRad : 0;
       for (let i = 0; i < 3; i++) {
         const fr = arr[i];
         if (!fr) continue;
@@ -461,7 +492,9 @@ export class SMPLXRetarget {
         if (!bone) continue;
         const d = V(k[i + 2]).sub(V(k[i + 1])); // real segment: parent→child landmark
         if (d.lengthSq() < 1e-12) continue;
-        this._aimBone(bone, fr.fwdLocal, toHand(d.normalize()), this._handLerp);
+        const dir = toHand(d.normalize());
+        if (swing) dir.applyAxisAngle(Za, swing); // swing the thumb across the palm plane
+        this._aimBone(bone, fr.fwdLocal, dir, this._handLerp);
         bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
       }
     }
@@ -550,16 +583,16 @@ export class SMPLXRetarget {
       const relX = (screen.x - anchor.x) / anchor.scale;
       const relY = (screen.y - anchor.y) / anchor.scale;
       T = new THREE.Vector3(
-        mid.x + relX * avShoulderW * REACH_GAIN * MIRROR_X,
-        mid.y - relY * avShoulderW * REACH_GAIN,
-        mid.z + avShoulderW * BOX_DEPTH * FRONT_Z,
+        mid.x + relX * avShoulderW * this._reachGain * MIRROR_X,
+        mid.y - relY * avShoulderW * this._reachGain,
+        mid.z + avShoulderW * this._reachDepth * FRONT_Z,
       );
     } else {
       // Absolute fallback (no shoulders/nose): image-centered box.
       T = new THREE.Vector3(
         mid.x + (0.5 - screen.x) * avShoulderW * BOX_W * -MIRROR_X,
         mid.y + (0.5 - screen.y) * avShoulderW * BOX_H,
-        mid.z + avShoulderW * BOX_DEPTH * FRONT_Z,
+        mid.z + avShoulderW * this._reachDepth * FRONT_Z,
       );
     }
 
@@ -715,7 +748,7 @@ export class SMPLXRetarget {
                : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
     const oc = this._orientCalib;
     this._lastDebug =
-        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}° smoothing:${Math.round(this._smoothing * 100)}%`
+        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)}  smooth:${Math.round(this._smoothing * 100)}%`
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
