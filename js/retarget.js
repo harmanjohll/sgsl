@@ -146,6 +146,7 @@ export class SMPLXRetarget {
     this._thumbDeg = 0;      // swings the thumb across the palm (abduction/adduction)
     this._reachDepth = BOX_DEPTH;   // signing-plane forward distance
     this._reachGain = REACH_GAIN;   // arm-reach scale (extension)
+    this._wristFlip = false;        // mirror the hand mapping → reverse wrist-twist direction
   }
 
   /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
@@ -175,6 +176,9 @@ export class SMPLXRetarget {
     if (typeof c.gain === 'number' && isFinite(c.gain)) this._reachGain = c.gain;
   }
 
+  /** Toggle the wrist-rotation direction (mirrors the hand mapping). false = current. */
+  setWristFlip(on) { this._wristFlip = !!on; }
+
   /** Stability slider 0..1 → smaller per-frame slerp = more temporal smoothing (more lag).
    *  s=0 reproduces the original HAND_LERP / ARM_IK_LERP exactly. */
   setSmoothing(s) {
@@ -194,7 +198,7 @@ export class SMPLXRetarget {
         yawDeg: this._orientCalib.yawDeg,
         curlGain: this._curlGain, spreadGain: this._spreadGain, thumbDeg: this._thumbDeg,
         reachDepth: this._reachDepth, reachGain: this._reachGain,
-        smoothing: this._smoothing,
+        wristFlip: this._wristFlip, smoothing: this._smoothing,
       },
     };
   }
@@ -383,7 +387,13 @@ export class SMPLXRetarget {
     const BN = THREE.VRMSchema.HumanoidBoneName;
     const hand = vrm.humanoid.getBoneNode(BN[`${side}Hand`]);
     if (!hand) return;
-    const V = (i) => new THREE.Vector3(world[i].x * HAND_WX, world[i].y * HAND_WY, world[i].z * HAND_WZ);
+    // Wrist-rotation toggle: the hand mapping is a reflection (HAND_W det = -1), which reverses
+    // the SENSE of wrist twist (user CCW → avatar CW). `_wristFlip` flips the x-axis of the
+    // mapping, mirroring the hand so the twist follows the other way (also swaps thumb side —
+    // they're coupled). det is recomputed so the palm-normal + finger across stay consistent.
+    const wx = this._wristFlip ? -HAND_WX : HAND_WX;
+    const det = wx * HAND_WY * HAND_WZ;
+    const V = (i) => new THREE.Vector3(world[i].x * wx, world[i].y * HAND_WY, world[i].z * HAND_WZ);
 
     // Hand orientation (palm facing). Compute fingerDir + palmNormal FIRST so the forearm
     // can be oriented palm-aware (matching the hand's roll → no wrist twist).
@@ -392,7 +402,7 @@ export class SMPLXRetarget {
     // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),
     // with the reflection-determinant correction so it matches the rest basis.
     const palmNormal = new THREE.Vector3()
-      .crossVectors(fingerDir, V(17).sub(V(5))).multiplyScalar(HAND_DET).normalize();
+      .crossVectors(fingerDir, V(17).sub(V(5))).multiplyScalar(det).normalize();
 
     // Stabilise palm-vs-back against MediaPipe's depth flip using the 2D knuckle
     // winding (world x/y don't flip with depth). Normalised so |wind| ∈ [0,1].
@@ -476,7 +486,7 @@ export class SMPLXRetarget {
     // User shaping: spreadGain scales the across (splay) term, curlGain the palm-normal (bend)
     // term. Defaults 1/1 leave the direct aim untouched; straight segments (dot≈0) are unaffected.
     const toHand = (d) => new THREE.Vector3()
-      .addScaledVector(Xa, HAND_DET * d.dot(Xm) * this._spreadGain)
+      .addScaledVector(Xa, det * d.dot(Xm) * this._spreadGain)
       .addScaledVector(Ya, d.dot(Ym))
       .addScaledVector(Za, d.dot(Zm) * this._curlGain);
     const thumbRad = this._thumbDeg * Math.PI / 180; // thumb abduction about the palm normal (Za)
@@ -748,7 +758,7 @@ export class SMPLXRetarget {
                : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
     const oc = this._orientCalib;
     this._lastDebug =
-        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)}  smooth:${Math.round(this._smoothing * 100)}%`
+        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'}  smooth:${Math.round(this._smoothing * 100)}%`
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`

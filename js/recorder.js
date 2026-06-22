@@ -48,7 +48,7 @@ let inited = false;
 // current render exactly (180° roll, gains 1, thumb 0°, reach = engine constants).
 const CALIB_KEY = 'sgsl.calib.v1';
 const CALIB_DEFAULTS = {
-  rollDeg: 180, pitchDeg: 0, yawDeg: 0,        // orientation
+  rollDeg: 180, pitchDeg: 0, yawDeg: 0, wristFlip: false,   // orientation
   curlGain: 1, spreadGain: 1, thumbDeg: 0,     // fingers / thumb
   reachDepth: 1.2, reachGain: 1.15,            // reach (= BOX_DEPTH / REACH_GAIN)
   smoothing: 0,                                // stability
@@ -905,7 +905,10 @@ function loadCalibSettings() {
     if (s && typeof s === 'object') {
       const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
       calibSettings = {};
-      for (const k of Object.keys(CALIB_DEFAULTS)) calibSettings[k] = num(s[k], CALIB_DEFAULTS[k]);
+      for (const k of Object.keys(CALIB_DEFAULTS)) {
+        const d = CALIB_DEFAULTS[k];
+        calibSettings[k] = (typeof d === 'boolean') ? (typeof s[k] === 'boolean' ? s[k] : d) : num(s[k], d);
+      }
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
@@ -917,6 +920,7 @@ function applyCalibSettings() {
   retarget?.setOrientationCalibration?.({ rollDeg: c.rollDeg, pitchDeg: c.pitchDeg, yawDeg: c.yawDeg });
   retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg });
   retarget?.setReach?.({ depth: c.reachDepth, gain: c.reachGain });
+  retarget?.setWristFlip?.(c.wristFlip);
   retarget?.setSmoothing?.(c.smoothing);
 }
 function wireCalibControls() {
@@ -939,6 +943,14 @@ function wireCalibControls() {
   wire('curl', 'curlGain', gain); wire('spread', 'spreadGain', gain); wire('thumb', 'thumbDeg', deg);
   wire('depth', 'reachDepth', num); wire('ext', 'reachGain', num);
   wire('smooth', 'smoothing', pct);
+  // Wrist-rotation toggle (a button, not a slider): flips the twist direction.
+  const wf = document.getElementById('calib-wristflip');
+  const syncWf = () => { if (wf) wf.textContent = `Wrist rotation: ${calibSettings.wristFlip ? 'Flipped' : 'Normal'}`; };
+  syncWf(); syncs.push(syncWf);
+  wf?.addEventListener('click', () => {
+    calibSettings.wristFlip = !calibSettings.wristFlip;
+    syncWf(); applyCalibSettings(); saveCalibSettings();
+  });
   document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
     calibSettings = { ...CALIB_DEFAULTS };
     syncs.forEach((s) => s());
@@ -987,7 +999,7 @@ function captureScreenshot() {
     ctx.fillStyle = '#ffd479'; ctx.fillText(
       `calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
       + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°`
-      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
+      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
       10, H + 18);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);
