@@ -91,6 +91,7 @@
         <!-- Manual calibration + stability: dial the hand orientation in by eye and steady
              the avatar while the automatic math is being refined. Persisted in localStorage. -->
         <div class="calib-panel">
+          <div class="calib-group-title">Orientation</div>
           <label class="speed-control">Palm rotation:
             <input type="range" id="calib-roll" min="-180" max="180" step="5" value="180">
             <span id="calib-roll-label">180°</span>
@@ -103,7 +104,30 @@
             <input type="range" id="calib-yaw" min="-90" max="90" step="5" value="0">
             <span id="calib-yaw-label">0°</span>
           </label>
-          <label class="speed-control">Stability:
+          <div class="calib-group-title">Fingers</div>
+          <label class="speed-control">Curl:
+            <input type="range" id="calib-curl" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-curl-label">1.00×</span>
+          </label>
+          <label class="speed-control">Spread:
+            <input type="range" id="calib-spread" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-spread-label">1.00×</span>
+          </label>
+          <label class="speed-control">Thumb:
+            <input type="range" id="calib-thumb" min="-60" max="60" step="5" value="0">
+            <span id="calib-thumb-label">0°</span>
+          </label>
+          <div class="calib-group-title">Reach</div>
+          <label class="speed-control">Depth (forward):
+            <input type="range" id="calib-depth" min="0.4" max="2.5" step="0.05" value="1.2">
+            <span id="calib-depth-label">1.20</span>
+          </label>
+          <label class="speed-control">Extension:
+            <input type="range" id="calib-ext" min="0.7" max="1.8" step="0.05" value="1.15">
+            <span id="calib-ext-label">1.15</span>
+          </label>
+          <div class="calib-group-title">Stability</div>
+          <label class="speed-control">Smoothing:
             <input type="range" id="calib-smooth" min="0" max="1" step="0.05" value="0">
             <span id="calib-smooth-label">0%</span>
           </label>

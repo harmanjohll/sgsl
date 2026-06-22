@@ -44,10 +44,16 @@ let lastFidelity = null;
 let fidelityTolerance = 8;   // % of shoulder-width; the "margin of error"
 let inited = false;
 
-// Manual calibration + stability (user sliders), persisted across sessions. Defaults
-// reproduce the current behaviour exactly (180° palm roll, no extra smoothing).
+// Manual calibration (user sliders), persisted across sessions. Defaults reproduce the
+// current render exactly (180° roll, gains 1, thumb 0°, reach = engine constants).
 const CALIB_KEY = 'sgsl.calib.v1';
-let calibSettings = { rollDeg: 180, pitchDeg: 0, yawDeg: 0, smoothing: 0 };
+const CALIB_DEFAULTS = {
+  rollDeg: 180, pitchDeg: 0, yawDeg: 0,        // orientation
+  curlGain: 1, spreadGain: 1, thumbDeg: 0,     // fingers / thumb
+  reachDepth: 1.2, reachGain: 1.15,            // reach (= BOX_DEPTH / REACH_GAIN)
+  smoothing: 0,                                // stability
+};
+let calibSettings = { ...CALIB_DEFAULTS };
 
 // Temporary live IK diagnostic (set false to hide). Draws a ring on each
 // hand showing which avatar arm it drives and whether that arm is "on".
@@ -896,12 +902,10 @@ function discardRecording() {
 function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
-    if (s && typeof s.rollDeg === 'number') {
+    if (s && typeof s === 'object') {
       const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
-      calibSettings = {
-        rollDeg: s.rollDeg, pitchDeg: num(s.pitchDeg, 0), yawDeg: num(s.yawDeg, 0),
-        smoothing: num(s.smoothing, 0),
-      };
+      calibSettings = {};
+      for (const k of Object.keys(CALIB_DEFAULTS)) calibSettings[k] = num(s[k], CALIB_DEFAULTS[k]);
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
@@ -909,40 +913,35 @@ function saveCalibSettings() {
   try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSettings)); } catch { /* private mode */ }
 }
 function applyCalibSettings() {
-  retarget?.setOrientationCalibration?.({
-    rollDeg: calibSettings.rollDeg, pitchDeg: calibSettings.pitchDeg, yawDeg: calibSettings.yawDeg,
-  });
-  retarget?.setSmoothing?.(calibSettings.smoothing);
+  const c = calibSettings;
+  retarget?.setOrientationCalibration?.({ rollDeg: c.rollDeg, pitchDeg: c.pitchDeg, yawDeg: c.yawDeg });
+  retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg });
+  retarget?.setReach?.({ depth: c.reachDepth, gain: c.reachGain });
+  retarget?.setSmoothing?.(c.smoothing);
 }
 function wireCalibControls() {
-  // Each angle slider (roll/pitch/yaw) shares the same wiring: live label, retarget update, persist.
-  const wireAngle = (id, key) => {
+  // Generic slider wiring: live label (via fmt), retarget update, persist. One per knob.
+  const deg = (v) => `${Math.round(v)}°`, gain = (v) => `${v.toFixed(2)}×`,
+        num = (v) => v.toFixed(2), pct = (v) => `${Math.round(v * 100)}%`;
+  const syncs = [];
+  const wire = (id, key, fmt) => {
     const inp = document.getElementById(`calib-${id}`);
     const lbl = document.getElementById(`calib-${id}-label`);
-    const sync = () => { if (inp) inp.value = calibSettings[key]; if (lbl) lbl.textContent = `${Math.round(calibSettings[key])}°`; };
-    sync();
+    const sync = () => { if (inp) inp.value = calibSettings[key]; if (lbl) lbl.textContent = fmt(calibSettings[key]); };
+    sync(); syncs.push(sync);
     inp?.addEventListener('input', () => {
       calibSettings[key] = parseFloat(inp.value);
-      if (lbl) lbl.textContent = `${Math.round(calibSettings[key])}°`;
+      if (lbl) lbl.textContent = fmt(calibSettings[key]);
       applyCalibSettings(); saveCalibSettings();
     });
-    return sync;
   };
-  const syncRoll = wireAngle('roll', 'rollDeg');
-  const syncPitch = wireAngle('pitch', 'pitchDeg');
-  const syncYaw = wireAngle('yaw', 'yawDeg');
-  const smooth = document.getElementById('calib-smooth');
-  const smoothLbl = document.getElementById('calib-smooth-label');
-  const syncSmooth = () => { if (smooth) smooth.value = calibSettings.smoothing; if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`; };
-  syncSmooth();
-  smooth?.addEventListener('input', () => {
-    calibSettings.smoothing = parseFloat(smooth.value);
-    if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`;
-    applyCalibSettings(); saveCalibSettings();
-  });
+  wire('roll', 'rollDeg', deg); wire('pitch', 'pitchDeg', deg); wire('yaw', 'yawDeg', deg);
+  wire('curl', 'curlGain', gain); wire('spread', 'spreadGain', gain); wire('thumb', 'thumbDeg', deg);
+  wire('depth', 'reachDepth', num); wire('ext', 'reachGain', num);
+  wire('smooth', 'smoothing', pct);
   document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
-    calibSettings = { rollDeg: 180, pitchDeg: 0, yawDeg: 0, smoothing: 0 };
-    syncRoll(); syncPitch(); syncYaw(); syncSmooth();
+    calibSettings = { ...CALIB_DEFAULTS };
+    syncs.forEach((s) => s());
     applyCalibSettings(); saveCalibSettings();
     setRecStatus('Calibration reset to defaults.', 'info');
   });
@@ -984,7 +983,12 @@ function captureScreenshot() {
     const cal = m.calibration || calibSettings;
     const fmt = (d) => d ? `face:${d.facing} palmN:[${(d.palmN || []).join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°` : '—';
     ctx.font = '13px monospace'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffd479'; ctx.fillText(`calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°  smoothing:${Math.round((cal.smoothing || 0) * 100)}%`, 10, H + 18);
+    const cnum = (v, d) => (typeof v === 'number' ? v : d);
+    ctx.fillStyle = '#ffd479'; ctx.fillText(
+      `calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
+      + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°`
+      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
+      10, H + 18);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);
 
