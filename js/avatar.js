@@ -42,7 +42,8 @@ export class SMPLXAvatar {
     const w = this.container.clientWidth || 400;
     const h = this.container.clientHeight || 520;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // preserveDrawingBuffer lets the recorder read the canvas into a screenshot composite.
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.container.innerHTML = '';
@@ -290,4 +291,10 @@ export class SMPLXAvatar {
   }
 
   setPlaying(on) { this._playing = !!on; this._silentFrames = 0; }
+
+  /** Render the current avatar pose and return its canvas (for screenshot compositing). */
+  captureCanvas() {
+    if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera);
+    return this.renderer ? this.renderer.domElement : null;
+  }
 }

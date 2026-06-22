@@ -238,6 +238,11 @@ html, body {
 }
 .rec-input:focus { border-color: var(--accent); }
 .rec-btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.calib-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+}
 .btn-record { background: #cc3344; border-color: #cc3344; color: #fff; font-weight: 600; }
 .btn-record:hover { background: #dd4455; }
 .btn-save { background: #339955; border-color: #339955; color: #fff; font-weight: 600; }

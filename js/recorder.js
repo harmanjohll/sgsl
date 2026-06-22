@@ -44,6 +44,11 @@ let lastFidelity = null;
 let fidelityTolerance = 8;   // % of shoulder-width; the "margin of error"
 let inited = false;
 
+// Manual calibration + stability (user sliders), persisted across sessions. Defaults
+// reproduce the current behaviour exactly (180° palm roll, no extra smoothing).
+const CALIB_KEY = 'sgsl.calib.v1';
+let calibSettings = { rollDeg: 180, smoothing: 0 };
+
 // Temporary live IK diagnostic (set false to hide). Draws a ring on each
 // hand showing which avatar arm it drives and whether that arm is "on".
 const DEBUG_OVERLAY = true;
@@ -90,6 +95,11 @@ export async function init() {
       if (lastFidelity) renderFidelity(lastFidelity);
     });
   }
+
+  // Manual calibration + stability sliders (persisted; applied to the live retarget).
+  loadCalibSettings();
+  applyCalibSettings();
+  wireCalibControls();
 
   const imp = document.getElementById('rec-import');
   if (imp) imp.addEventListener('change', importRecording);
@@ -257,7 +267,7 @@ function captureDumpFrame(results) {
   if (hr && hr.worldLandmarks) for (let i = 0; i < hr.worldLandmarks.length; i++)
     raw.push({ side: hr.handedness?.[i]?.[0]?.categoryName || '?', w: enc(hr.worldLandmarks[i]) });
   if (!dumpDbgLogged) { dumpDbgLogged = true; console.log('[dump] merged R/L:', !!rW, !!lW, '| raw hands:', raw.length, '| hr keys:', hr ? Object.keys(hr).join(',') : 'none'); }
-  const frame = { t: Math.round(now), rW, lW, raw, arm: null };
+  const frame = { t: Math.round(now), rW, lW, raw, arm: null, metrics: snapshotMetrics() };
   pendingArmFrame = frame;          // arm state attached after the avatar is driven this frame
   dumpFrames.push(frame);
   if (dumpFrames.length % 6 === 0) {
@@ -275,7 +285,7 @@ function stopHandDump() {
     setRecStatus('⚠ No hands captured — nothing to send. Raise your hand so the avatar mirrors it in 3D (overlay "world R/L: y") BEFORE clicking Dump, then retry.', 'error');
     return;
   }
-  const payload = { kind: 'sgsl-hand-dump', version: 3, interval_ms: DUMP_INTERVAL, frames: dumpFrames };
+  const payload = { kind: 'sgsl-hand-dump', version: 4, interval_ms: DUMP_INTERVAL, calibrationSettings: { ...calibSettings }, frames: dumpFrames };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -349,6 +359,7 @@ function onHolisticResults(results) {
     calibBuf.push(frame);
   } else if (recording && frame) {
     frame.t = performance.now() - startTime;
+    frame.metrics = snapshotMetrics();   // per-frame orientation metrics (accuracy dataset)
     frames.push(frame);
   }
 }
@@ -812,6 +823,7 @@ function buildRecord(label) {
     schema_version: 2,
     landmarks: frames,
     calibration: calibBaseline,
+    calibrationSettings: { ...calibSettings },   // palm-rotation + smoothing used for this take
     quality: lastQuality ? {
       overall: lastQuality.overall,
       grade: lastQuality.grade,
@@ -878,6 +890,107 @@ function discardRecording() {
   if (timerEl) timerEl.textContent = '';
   const saveBtn = document.getElementById('btn-rec-save');
   if (saveBtn) saveBtn.disabled = true;
+}
+
+// ─── Manual calibration + stability + data capture ──────────
+function loadCalibSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(CALIB_KEY));
+    if (s && typeof s.rollDeg === 'number') {
+      calibSettings = { rollDeg: s.rollDeg, smoothing: typeof s.smoothing === 'number' ? s.smoothing : 0 };
+    }
+  } catch { /* ignore corrupt/absent settings */ }
+}
+function saveCalibSettings() {
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSettings)); } catch { /* private mode */ }
+}
+function applyCalibSettings() {
+  retarget?.setOrientationCalibration?.({ rollDeg: calibSettings.rollDeg });
+  retarget?.setSmoothing?.(calibSettings.smoothing);
+}
+function wireCalibControls() {
+  const roll = document.getElementById('calib-roll');
+  const rollLbl = document.getElementById('calib-roll-label');
+  const smooth = document.getElementById('calib-smooth');
+  const smoothLbl = document.getElementById('calib-smooth-label');
+  const reset = document.getElementById('btn-calib-reset');
+  const shot = document.getElementById('btn-screenshot');
+  const setRollUI = () => { if (roll) roll.value = calibSettings.rollDeg; if (rollLbl) rollLbl.textContent = `${Math.round(calibSettings.rollDeg)}°`; };
+  const setSmoothUI = () => { if (smooth) smooth.value = calibSettings.smoothing; if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`; };
+  setRollUI(); setSmoothUI();
+  roll?.addEventListener('input', () => {
+    calibSettings.rollDeg = parseFloat(roll.value);
+    if (rollLbl) rollLbl.textContent = `${Math.round(calibSettings.rollDeg)}°`;
+    applyCalibSettings(); saveCalibSettings();
+  });
+  smooth?.addEventListener('input', () => {
+    calibSettings.smoothing = parseFloat(smooth.value);
+    if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`;
+    applyCalibSettings(); saveCalibSettings();
+  });
+  reset?.addEventListener('click', () => {
+    calibSettings = { rollDeg: 180, smoothing: 0 };
+    setRollUI(); setSmoothUI();
+    applyCalibSettings(); saveCalibSettings();
+    setRecStatus('Calibration reset to defaults.', 'info');
+  });
+  shot?.addEventListener('click', captureScreenshot);
+}
+
+// Per-frame orientation metrics snapshot (facing/wind/curl/thumb/bend/roll per side),
+// embedded in recordings + dumps so each capture is self-describing for accuracy tuning.
+function snapshotMetrics() {
+  const m = retarget?._handDbg;
+  if (!m) return null;
+  const pick = (d) => d ? { facing: d.facing, wind: d.wind, curl: d.curl, thumb: d.thumb, bend: d.bend, roll: d.roll } : null;
+  const R = pick(m.Right), L = pick(m.Left);
+  return (R || L) ? { R, L } : null;
+}
+
+// Screenshot: compose camera (+ landmark overlay) | avatar render, with a metrics + calibration
+// footer, and a paired metrics .json — so a screenshot is never numberless.
+function captureScreenshot() {
+  try {
+    const video = document.getElementById('rec-video');
+    const overlay = document.getElementById('rec-overlay');
+    const avCanvas = avatar?.captureCanvas?.();
+    const camW = (video && video.videoWidth) || (overlay && overlay.width) || 640;
+    const camH = (video && video.videoHeight) || (overlay && overlay.height) || 480;
+    const avW = avCanvas?.width || 0, avH = avCanvas?.height || 0;
+    const footer = 84;
+    const H = Math.max(camH, avH || 0);
+    const out = document.createElement('canvas');
+    out.width = camW + avW;
+    out.height = H + footer;
+    const ctx = out.getContext('2d');
+    ctx.fillStyle = '#11131f'; ctx.fillRect(0, 0, out.width, out.height);
+    if (video && video.videoWidth) ctx.drawImage(video, 0, 0, camW, camH);
+    if (overlay) ctx.drawImage(overlay, 0, 0, camW, camH);
+    if (avCanvas) ctx.drawImage(avCanvas, camW, 0, avW, avH);
+    ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, H, out.width, footer);
+    const m = retarget?.getMetrics?.() || {};
+    const cal = m.calibration || calibSettings;
+    const fmt = (d) => d ? `face:${d.facing} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°` : '—';
+    ctx.font = '13px monospace'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffd479'; ctx.fillText(`calib  roll:${Math.round(cal.rollDeg)}°  smoothing:${Math.round((cal.smoothing || 0) * 100)}%`, 10, H + 18);
+    ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
+    ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);
+
+    const label = (document.getElementById('rec-label')?.value || '').trim().replace(/[^a-z0-9_-]+/gi, '_')
+      || new Date().toISOString().replace(/[:.]/g, '-');
+    const dl = (blob, name) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    out.toBlob((blob) => { if (blob) dl(blob, `sgsl-${label}.png`); }, 'image/png');
+    const meta = { kind: 'sgsl-screenshot-meta', t: new Date().toISOString(), label, calibration: cal, metrics: { Right: m.Right || null, Left: m.Left || null } };
+    dl(new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }), `sgsl-${label}.json`);
+    setRecStatus(`Screenshot + metrics saved (sgsl-${label}.png/.json).`, 'success');
+  } catch (e) {
+    setRecStatus(`Screenshot failed: ${e.message}`, 'error');
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────

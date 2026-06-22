@@ -79,13 +79,13 @@ const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
 // (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
 const STRAIGHT_GAIN = 1.0;
 const WRIST_SWING_CAP = 80 * Math.PI / 180;
-// Roll the whole hand 180° about the forearm (fingerDir) axis. The raw palm basis
-// renders the palm inverted front/back (signer's palm toward their own face → avatar
-// palm AWAY from its face). Negating palmNormal flips both the palm-normal (Z) and the
-// across (X) of the hand basis, i.e. a true 180° rotation about fingerDir (a wrist roll,
-// NOT a mirror) — so the fingers/thumb follow consistently. Applied AFTER the winding
-// override (below) so the override can't undo it.
-const WRIST_ROLL_PI = true;
+// Manual palm-rotation calibration. The hand is rolled about the forearm (fingerDir)
+// axis by a USER-SET angle (default 180°). 180° == negating palmNormal: it flips both the
+// palm-normal (Z) and across (X) of the hand basis — a true 180° wrist roll (NOT a mirror),
+// so the fingers/thumb follow consistently. Other angles let the user dial the palm facing
+// in by eye to correct the imperfect monocular orientation (setOrientationCalibration).
+// Applied to palmNormal BEFORE qHandWorld so the forearm follows and the wrist stays straight.
+const DEFAULT_ROLL_DEG = 180;
 // Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
 // is aimed along its real landmark segment, re-expressed in the avatar's hand
 // frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
@@ -131,6 +131,37 @@ export class SMPLXRetarget {
     // anchor (shoulder midpoint + width) so the mapping doesn't drift with the live
     // pose when an arm raises. Set via setCalibration(); null = use the live anchor.
     this._calib = null;
+    // Manual hand-orientation calibration (user slider) — palm roll about the finger axis.
+    this._orientCalib = { rollDeg: DEFAULT_ROLL_DEG };
+    // Stability: 0 = responsive (the original slerp rates), 1 = very smooth (more lag).
+    // Effective per-frame slerp amounts derived from it; defaults reproduce the originals.
+    this._smoothing = 0;
+    this._handLerp = HAND_LERP;
+    this._armLerp = ARM_IK_LERP;
+  }
+
+  /** Manual palm-rotation calibration in degrees about the finger axis (slider).
+   *  180 = the default front/back wrist roll; lets the user correct palm facing by eye. */
+  setOrientationCalibration(c) {
+    if (c && typeof c.rollDeg === 'number' && isFinite(c.rollDeg)) this._orientCalib.rollDeg = c.rollDeg;
+  }
+
+  /** Stability slider 0..1 → smaller per-frame slerp = more temporal smoothing (more lag).
+   *  s=0 reproduces the original HAND_LERP / ARM_IK_LERP exactly. */
+  setSmoothing(s) {
+    this._smoothing = clampNum(+s || 0, 0, 1);
+    const k = 1 - 0.8 * this._smoothing;   // 1 → 0.2 as smoothing rises
+    this._handLerp = HAND_LERP * k;
+    this._armLerp = ARM_IK_LERP * k;
+  }
+
+  /** Current per-hand orientation metrics ({facing,wind,curl,thumb,bend,roll}) + the live
+   *  calibration, for embedding in recordings / dumps / screenshots (the accuracy dataset). */
+  getMetrics() {
+    return {
+      Right: this._handDbg.Right, Left: this._handDbg.Left,
+      calibration: { rollDeg: this._orientCalib.rollDeg, smoothing: this._smoothing },
+    };
   }
   reset() {
     oldLookTarget = new THREE.Euler();
@@ -344,8 +375,11 @@ export class SMPLXRetarget {
       this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
       if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
     }
-    // 180° wrist roll so the palm faces the same way the signer's does (see WRIST_ROLL_PI).
-    if (WRIST_ROLL_PI) palmNormal.negate();
+    // Manual palm-rotation calibration: roll the hand about the finger axis by the user-set
+    // angle (default 180° = the front/back wrist roll). Since palmNormal ⊥ fingerDir, 180° is
+    // exactly negation (unchanged default). Applied here so the forearm + finger frame follow.
+    const rollRad = (this._orientCalib.rollDeg || 0) * Math.PI / 180;
+    if (rollRad) palmNormal.applyAxisAngle(fingerDir, rollRad);
 
     // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
     const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
@@ -361,14 +395,14 @@ export class SMPLXRetarget {
     if (lowerArm && lowerArm.parent && armRig && armRig.handBindLocal) {
       const qLowerWorld = qHandWorld.clone().multiply(armRig.handBindLocal.clone().invert());
       const pInv = lowerArm.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
-      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), ARM_IK_LERP);
+      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), this._armLerp);
       lowerArm.updateWorldMatrix(true, true); // refresh the Hand (child) world transform too
       const res = hand.getWorldPosition(new THREE.Vector3())
         .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
       if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI;
     }
 
-    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal);
+    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal, this._handLerp);
     hand.updateWorldMatrix(true, true);
 
     // Fingers + thumb: DIRECT HAND-LOCAL AIM. Aim each bone so it points along its
@@ -411,7 +445,7 @@ export class SMPLXRetarget {
         if (!bone) continue;
         const d = V(k[i + 2]).sub(V(k[i + 1])); // real segment: parent→child landmark
         if (d.lengthSq() < 1e-12) continue;
-        this._aimBone(bone, fr.fwdLocal, toHand(d.normalize()), HAND_LERP);
+        this._aimBone(bone, fr.fwdLocal, toHand(d.normalize()), this._handLerp);
         bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
       }
     }
@@ -526,11 +560,11 @@ export class SMPLXRetarget {
     // Aim upper arm S→E (places the elbow). When a 3D hand drives this side,
     // _driveHand owns the forearm (re-aims it to follow the hand); aiming it at T
     // here too would make the two slerps fight and leave the wrist knotted, so skip it.
-    this._aimBone(ua, upperRestAxis, E.clone().sub(S));
+    this._aimBone(ua, upperRestAxis, E.clone().sub(S), this._armLerp);
     ua.updateWorldMatrix(true, true);
     if (!skipForearm) {
       const Ew = la.getWorldPosition(new THREE.Vector3());
-      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew)); // forearm fallback when no 3D hand
+      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew), this._armLerp); // forearm fallback when no 3D hand
     }
     return true;
   }
