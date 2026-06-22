@@ -192,7 +192,9 @@ function runDump(path, side, csv) {
   // rW = signer's RIGHT hand, lW = signer's LEFT (recorder.js enc order).
   const pick = side === 'Left' ? (f => f.lW) : (f => f.rW);
   const hands = frames.map(pick).filter(valid);
-  console.log(`Dump: ${path}  version=${json.version}  frames=${frames.length}  valid ${side}-hand frames=${hands.length}\n`);
+  const cs = json.calibrationSettings;
+  console.log(`Dump: ${path}  version=${json.version}  frames=${frames.length}  valid ${side}-hand frames=${hands.length}`
+    + (cs ? `  | calib roll:${cs.rollDeg}° smoothing:${Math.round((cs.smoothing || 0) * 100)}%` : '') + '\n');
   if (!hands.length) { console.log('No valid hands for that side. Try the other side.'); return; }
 
   if (csv) console.log('idx,wind,fingerTiltZ,zScale,faceNow,faceNewell,nowVsNewellDeg');
