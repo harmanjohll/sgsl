@@ -47,7 +47,7 @@ let inited = false;
 // Manual calibration + stability (user sliders), persisted across sessions. Defaults
 // reproduce the current behaviour exactly (180° palm roll, no extra smoothing).
 const CALIB_KEY = 'sgsl.calib.v1';
-let calibSettings = { rollDeg: 180, smoothing: 0 };
+let calibSettings = { rollDeg: 180, pitchDeg: 0, yawDeg: 0, smoothing: 0 };
 
 // Temporary live IK diagnostic (set false to hide). Draws a ring on each
 // hand showing which avatar arm it drives and whether that arm is "on".
@@ -897,7 +897,11 @@ function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
     if (s && typeof s.rollDeg === 'number') {
-      calibSettings = { rollDeg: s.rollDeg, smoothing: typeof s.smoothing === 'number' ? s.smoothing : 0 };
+      const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+      calibSettings = {
+        rollDeg: s.rollDeg, pitchDeg: num(s.pitchDeg, 0), yawDeg: num(s.yawDeg, 0),
+        smoothing: num(s.smoothing, 0),
+      };
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
@@ -905,36 +909,44 @@ function saveCalibSettings() {
   try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSettings)); } catch { /* private mode */ }
 }
 function applyCalibSettings() {
-  retarget?.setOrientationCalibration?.({ rollDeg: calibSettings.rollDeg });
+  retarget?.setOrientationCalibration?.({
+    rollDeg: calibSettings.rollDeg, pitchDeg: calibSettings.pitchDeg, yawDeg: calibSettings.yawDeg,
+  });
   retarget?.setSmoothing?.(calibSettings.smoothing);
 }
 function wireCalibControls() {
-  const roll = document.getElementById('calib-roll');
-  const rollLbl = document.getElementById('calib-roll-label');
+  // Each angle slider (roll/pitch/yaw) shares the same wiring: live label, retarget update, persist.
+  const wireAngle = (id, key) => {
+    const inp = document.getElementById(`calib-${id}`);
+    const lbl = document.getElementById(`calib-${id}-label`);
+    const sync = () => { if (inp) inp.value = calibSettings[key]; if (lbl) lbl.textContent = `${Math.round(calibSettings[key])}°`; };
+    sync();
+    inp?.addEventListener('input', () => {
+      calibSettings[key] = parseFloat(inp.value);
+      if (lbl) lbl.textContent = `${Math.round(calibSettings[key])}°`;
+      applyCalibSettings(); saveCalibSettings();
+    });
+    return sync;
+  };
+  const syncRoll = wireAngle('roll', 'rollDeg');
+  const syncPitch = wireAngle('pitch', 'pitchDeg');
+  const syncYaw = wireAngle('yaw', 'yawDeg');
   const smooth = document.getElementById('calib-smooth');
   const smoothLbl = document.getElementById('calib-smooth-label');
-  const reset = document.getElementById('btn-calib-reset');
-  const shot = document.getElementById('btn-screenshot');
-  const setRollUI = () => { if (roll) roll.value = calibSettings.rollDeg; if (rollLbl) rollLbl.textContent = `${Math.round(calibSettings.rollDeg)}°`; };
-  const setSmoothUI = () => { if (smooth) smooth.value = calibSettings.smoothing; if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`; };
-  setRollUI(); setSmoothUI();
-  roll?.addEventListener('input', () => {
-    calibSettings.rollDeg = parseFloat(roll.value);
-    if (rollLbl) rollLbl.textContent = `${Math.round(calibSettings.rollDeg)}°`;
-    applyCalibSettings(); saveCalibSettings();
-  });
+  const syncSmooth = () => { if (smooth) smooth.value = calibSettings.smoothing; if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`; };
+  syncSmooth();
   smooth?.addEventListener('input', () => {
     calibSettings.smoothing = parseFloat(smooth.value);
     if (smoothLbl) smoothLbl.textContent = `${Math.round(calibSettings.smoothing * 100)}%`;
     applyCalibSettings(); saveCalibSettings();
   });
-  reset?.addEventListener('click', () => {
-    calibSettings = { rollDeg: 180, smoothing: 0 };
-    setRollUI(); setSmoothUI();
+  document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
+    calibSettings = { rollDeg: 180, pitchDeg: 0, yawDeg: 0, smoothing: 0 };
+    syncRoll(); syncPitch(); syncYaw(); syncSmooth();
     applyCalibSettings(); saveCalibSettings();
     setRecStatus('Calibration reset to defaults.', 'info');
   });
-  shot?.addEventListener('click', captureScreenshot);
+  document.getElementById('btn-screenshot')?.addEventListener('click', captureScreenshot);
 }
 
 // Per-frame orientation metrics snapshot (facing/wind/curl/thumb/bend/roll per side),
@@ -970,9 +982,9 @@ function captureScreenshot() {
     ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, H, out.width, footer);
     const m = retarget?.getMetrics?.() || {};
     const cal = m.calibration || calibSettings;
-    const fmt = (d) => d ? `face:${d.facing} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°` : '—';
+    const fmt = (d) => d ? `face:${d.facing} palmN:[${(d.palmN || []).join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°` : '—';
     ctx.font = '13px monospace'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#ffd479'; ctx.fillText(`calib  roll:${Math.round(cal.rollDeg)}°  smoothing:${Math.round((cal.smoothing || 0) * 100)}%`, 10, H + 18);
+    ctx.fillStyle = '#ffd479'; ctx.fillText(`calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°  smoothing:${Math.round((cal.smoothing || 0) * 100)}%`, 10, H + 18);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);
 
