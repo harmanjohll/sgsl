@@ -154,12 +154,18 @@ export class SMPLXRetarget {
     this._thumbDeg = 25;     // swings the thumb across the palm (abduction/adduction)
     this._reachDepth = 0.90; // signing-plane forward distance (calibrated default)
     this._reachGain = 1.00;  // arm-reach scale (extension, calibrated default)
+    this._thumbCurl = 0.70;  // thumb's OWN bend gain (decoupled from the fingers)
+    this._thumbSpread = 0.80;// thumb's OWN splay gain (decoupled from the fingers)
     this._wristFlip = true;         // mirror the hand mapping → reverse wrist-twist direction
     this._deformGuard = true;       // anatomical clamps so the hand can't skin into a deformed pose
+    this._guardStrictness = 1;      // 1 = base clamp limits (tight), 0 = effectively off
   }
 
   /** Toggle the anatomical deformation guard (finger + wrist clamps). true = on (default). */
   setDeformGuard(on) { this._deformGuard = !!on; }
+
+  /** Guard strength 0..1 — scales the clamp limits (1 = tight/base, 0 = loose/off). */
+  setGuardStrictness(s) { this._guardStrictness = clampNum(+s || 0, 0, 1); }
 
   /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
    *  the across axis (tilt forward/back), yaw about the palm normal (deviation). Any subset.
@@ -178,6 +184,8 @@ export class SMPLXRetarget {
     if (typeof c.curlGain === 'number' && isFinite(c.curlGain)) this._curlGain = c.curlGain;
     if (typeof c.spreadGain === 'number' && isFinite(c.spreadGain)) this._spreadGain = c.spreadGain;
     if (typeof c.thumbDeg === 'number' && isFinite(c.thumbDeg)) this._thumbDeg = c.thumbDeg;
+    if (typeof c.thumbCurl === 'number' && isFinite(c.thumbCurl)) this._thumbCurl = c.thumbCurl;
+    if (typeof c.thumbSpread === 'number' && isFinite(c.thumbSpread)) this._thumbSpread = c.thumbSpread;
   }
 
   /** Reach: depth (forward signing-plane distance, = BOX_DEPTH) + gain (arm extension,
@@ -209,8 +217,10 @@ export class SMPLXRetarget {
         rollDeg: this._orientCalib.rollDeg, pitchDeg: this._orientCalib.pitchDeg,
         yawDeg: this._orientCalib.yawDeg,
         curlGain: this._curlGain, spreadGain: this._spreadGain, thumbDeg: this._thumbDeg,
+        thumbCurl: this._thumbCurl, thumbSpread: this._thumbSpread,
         reachDepth: this._reachDepth, reachGain: this._reachGain,
-        wristFlip: this._wristFlip, deformGuard: this._deformGuard, smoothing: this._smoothing,
+        wristFlip: this._wristFlip, deformGuard: this._deformGuard,
+        guardStrictness: this._guardStrictness, smoothing: this._smoothing,
       },
     };
   }
@@ -479,10 +489,11 @@ export class SMPLXRetarget {
     // so the VRM hand can't skin into a collapsed/twisted pose. Only fires when the forearm hasn't
     // absorbed the twist (the deformation case); normal signs stay under the cap.
     if (this._deformGuard && armRig?.handBindLocal) {
+      const wristMax = WRIST_MAX + (Math.PI - WRIST_MAX) * (1 - this._guardStrictness); // guard strength
       const dev = armRig.handBindLocal.clone().invert().multiply(hand.quaternion);
       const ang = 2 * Math.acos(Math.min(1, Math.abs(dev.w)));
-      if (ang > WRIST_MAX) {
-        hand.quaternion.copy(armRig.handBindLocal).multiply(new THREE.Quaternion().slerp(dev, WRIST_MAX / ang));
+      if (ang > wristMax) {
+        hand.quaternion.copy(armRig.handBindLocal).multiply(new THREE.Quaternion().slerp(dev, wristMax / ang));
         hand.updateWorldMatrix(true, true);
       }
     }
@@ -512,18 +523,23 @@ export class SMPLXRetarget {
     // (HAND_W = -1,-1,-1, det = HAND_DET): palmNormal is sign-corrected by HAND_DET but
     // the across axis is not, so without this factor splay inverts (spread↔together) and
     // the thumb folds the wrong way. Verified visually with tools/hand_fk_preview.mjs.
-    // User shaping: spreadGain scales the across (splay) term, curlGain the palm-normal (bend)
-    // term. Defaults 1/1 leave the direct aim untouched; straight segments (dot≈0) are unaffected.
-    const toHand = (d) => new THREE.Vector3()
-      .addScaledVector(Xa, det * d.dot(Xm) * this._spreadGain)
+    // User shaping: spread scales the across (splay) term, curl the palm-normal (bend) term.
+    // The THUMB has its OWN gains (decoupled) so finger tuning doesn't drag it.
+    const toHand = (d, sg, cg) => new THREE.Vector3()
+      .addScaledVector(Xa, det * d.dot(Xm) * sg)
       .addScaledVector(Ya, d.dot(Ym))
-      .addScaledVector(Za, d.dot(Zm) * this._curlGain);
+      .addScaledVector(Za, d.dot(Zm) * cg);
     const thumbRad = this._thumbDeg * Math.PI / 180; // thumb abduction about the palm normal (Za)
+    // Guard strength scales the clamp limits: 1 = base (tight), 0 = effectively off (→ π).
+    const loosen = (base) => base + (Math.PI - base) * (1 - this._guardStrictness);
     for (const f of FINGER_NAMES) {
       const arr = rig.fingers[f];
       if (!arr) continue;
       const k = FINGER_SEG[f]; // [wrist, mcp, pip, dip, tip]
-      const swing = (f === 'Thumb' && thumbRad) ? thumbRad : 0;
+      const isThumb = f === 'Thumb';
+      const sg = isThumb ? this._thumbSpread : this._spreadGain;
+      const cg = isThumb ? this._thumbCurl : this._curlGain;
+      const swing = (isThumb && thumbRad) ? thumbRad : 0;
       for (let i = 0; i < 3; i++) {
         const fr = arr[i];
         if (!fr) continue;
@@ -531,9 +547,9 @@ export class SMPLXRetarget {
         if (!bone) continue;
         const d = V(k[i + 2]).sub(V(k[i + 1])); // real segment: parent→child landmark
         if (d.lengthSq() < 1e-12) continue;
-        const dir = toHand(d.normalize());
+        const dir = toHand(d.normalize(), sg, cg);
         if (swing) dir.applyAxisAngle(Za, swing); // swing the thumb across the palm plane
-        const maxA = this._deformGuard ? (f === 'Thumb' ? THUMB_MAX : FINGER_MAX)[i] : Math.PI;
+        const maxA = this._deformGuard ? loosen((isThumb ? THUMB_MAX : FINGER_MAX)[i]) : Math.PI;
         this._aimBone(bone, fr.fwdLocal, dir, this._handLerp, maxA);
         bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
       }
@@ -788,7 +804,7 @@ export class SMPLXRetarget {
                : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
     const oc = this._orientCalib;
     this._lastDebug =
-        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'} guard:${this._deformGuard ? 'on' : 'off'}  smooth:${Math.round(this._smoothing * 100)}%`
+        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°(c${this._thumbCurl.toFixed(2)}/s${this._thumbSpread.toFixed(2)})  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'} guard:${this._deformGuard ? 'on' : 'off'}×${this._guardStrictness.toFixed(2)}  smooth:${Math.round(this._smoothing * 100)}%`
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
