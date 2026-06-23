@@ -139,89 +139,59 @@ export class SMPLXRetarget {
     // anchor (shoulder midpoint + width) so the mapping doesn't drift with the live
     // pose when an arm raises. Set via setCalibration(); null = use the live anchor.
     this._calib = null;
-    // Manual hand-orientation calibration (user sliders) — roll/pitch/yaw about the hand's
-    // own axes (finger / across / palm-normal). Defaults reproduce the current render.
-    this._orientCalib = { rollDeg: -170, pitchDeg: 10, yawDeg: 25 };
-    // Stability: 0 = responsive (the original slerp rates), 1 = very smooth (more lag).
-    // Effective per-frame slerp amounts derived from it; defaults reproduce the originals.
-    this._smoothing = 0;
-    this._handLerp = HAND_LERP;
-    this._armLerp = ARM_IK_LERP;
-    // Finger/thumb shaping + reach (user sliders). Defaults are identities (no-op): gains 1,
-    // thumb 0°, reach = the original BOX_DEPTH / REACH_GAIN constants.
-    this._curlGain = 0.70;   // scales finger bend toward the palm (handshape tightness)
-    this._spreadGain = 0.80; // scales lateral finger splay
-    this._thumbDeg = 25;     // swings the thumb across the palm (abduction/adduction)
-    this._reachDepth = 0.90; // signing-plane forward distance (calibrated default)
-    this._reachGain = 1.00;  // arm-reach scale (extension, calibrated default)
-    this._thumbCurl = 0.70;  // thumb's OWN bend gain (decoupled from the fingers)
-    this._thumbSpread = 0.80;// thumb's OWN splay gain (decoupled from the fingers)
-    this._wristFlip = true;         // mirror the hand mapping → reverse wrist-twist direction
-    this._deformGuard = true;       // anatomical clamps so the hand can't skin into a deformed pose
-    this._guardStrictness = 1;      // 1 = base clamp limits (tight), 0 = effectively off
+    // Per-hand calibration (Right/Left) — chirality means the left hand needs its own (often
+    // mirrored) orientation. Each side stores a full set; _activate(side) loads one into the
+    // working this._* scratch fields just before that side is driven (so _driveHand/_solveArmIK
+    // stay unchanged). Seeded identical; the left is tuned via the Record-panel Left⇄Right selector.
+    this._sideCal = { Right: this._defaultCalib(), Left: this._defaultCalib() };
+    this._activate('Right');
   }
 
-  /** Toggle the anatomical deformation guard (finger + wrist clamps). true = on (default). */
-  setDeformGuard(on) { this._deformGuard = !!on; }
-
-  /** Guard strength 0..1 — scales the clamp limits (1 = tight/base, 0 = loose/off). */
-  setGuardStrictness(s) { this._guardStrictness = clampNum(+s || 0, 0, 1); }
-
-  /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
-   *  the across axis (tilt forward/back), yaw about the palm normal (deviation). Any subset.
-   *  180/0/0 = the default front/back wrist roll; lets the user correct the hand by eye. */
-  setOrientationCalibration(c) {
-    if (!c) return;
-    for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) {
-      if (typeof c[k] === 'number' && isFinite(c[k])) this._orientCalib[k] = c[k];
-    }
+  /** A fresh per-side calibration set (the shipped baseline). smoothing 0 = crisp playback;
+   *  the recorder applies the live smoothing per side via setHandTuning. */
+  _defaultCalib() {
+    return {
+      orientCalib: { rollDeg: -170, pitchDeg: 10, yawDeg: 25 },
+      curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25, thumbCurl: 0.70, thumbSpread: 0.80,
+      reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
+      guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
+    };
   }
 
-  /** Finger/thumb shaping: curlGain (bend toward palm), spreadGain (lateral splay), thumbDeg
-   *  (thumb abduction across the palm). Any subset; defaults 1/1/0 are no-ops. */
-  setFingerCalibration(c) {
-    if (!c) return;
-    if (typeof c.curlGain === 'number' && isFinite(c.curlGain)) this._curlGain = c.curlGain;
-    if (typeof c.spreadGain === 'number' && isFinite(c.spreadGain)) this._spreadGain = c.spreadGain;
-    if (typeof c.thumbDeg === 'number' && isFinite(c.thumbDeg)) this._thumbDeg = c.thumbDeg;
-    if (typeof c.thumbCurl === 'number' && isFinite(c.thumbCurl)) this._thumbCurl = c.thumbCurl;
-    if (typeof c.thumbSpread === 'number' && isFinite(c.thumbSpread)) this._thumbSpread = c.thumbSpread;
+  /** Load a side's calibration into the active this._* scratch fields read by _driveHand /
+   *  _solveArmIK. Called per-side each frame (in applyFromMediaPipe) before that side is driven. */
+  _activate(side) {
+    const c = this._sideCal[side]; if (!c) return;
+    this._orientCalib = c.orientCalib;
+    this._curlGain = c.curlGain; this._spreadGain = c.spreadGain; this._thumbDeg = c.thumbDeg;
+    this._thumbCurl = c.thumbCurl; this._thumbSpread = c.thumbSpread;
+    this._reachDepth = c.reachDepth; this._reachGain = c.reachGain;
+    this._wristFlip = c.wristFlip; this._deformGuard = c.deformGuard; this._guardStrictness = c.guardStrictness;
+    this._smoothing = c.smoothing; this._handLerp = c.handLerp; this._armLerp = c.armLerp;
   }
 
-  /** Reach: depth (forward signing-plane distance, = BOX_DEPTH) + gain (arm extension,
-   *  = REACH_GAIN). Any subset; defaults reproduce the original constants. */
-  setReach(c) {
-    if (!c) return;
-    if (typeof c.depth === 'number' && isFinite(c.depth)) this._reachDepth = c.depth;
-    if (typeof c.gain === 'number' && isFinite(c.gain)) this._reachGain = c.gain;
+  /** Per-hand tuning. `side` = 'Right'|'Left'; `c` = flat {rollDeg,…,smoothing} (any subset). */
+  setHandTuning(side, c) {
+    const cal = this._sideCal[side]; if (!cal || !c) return;
+    const num = (v) => typeof v === 'number' && isFinite(v);
+    for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) if (num(c[k])) cal.orientCalib[k] = c[k];
+    for (const k of ['curlGain', 'spreadGain', 'thumbDeg', 'thumbCurl', 'thumbSpread', 'reachDepth', 'reachGain', 'guardStrictness']) if (num(c[k])) cal[k] = c[k];
+    if (typeof c.wristFlip === 'boolean') cal.wristFlip = c.wristFlip;
+    if (typeof c.deformGuard === 'boolean') cal.deformGuard = c.deformGuard;
+    if (num(c.smoothing)) { cal.smoothing = clampNum(c.smoothing, 0, 1); const k = 1 - 0.8 * cal.smoothing; cal.handLerp = HAND_LERP * k; cal.armLerp = ARM_IK_LERP * k; }
   }
 
-  /** Toggle the wrist-rotation direction (mirrors the hand mapping). false = current. */
-  setWristFlip(on) { this._wristFlip = !!on; }
-
-  /** Stability slider 0..1 → smaller per-frame slerp = more temporal smoothing (more lag).
-   *  s=0 reproduces the original HAND_LERP / ARM_IK_LERP exactly. */
-  setSmoothing(s) {
-    this._smoothing = clampNum(+s || 0, 0, 1);
-    const k = 1 - 0.8 * this._smoothing;   // 1 → 0.2 as smoothing rises
-    this._handLerp = HAND_LERP * k;
-    this._armLerp = ARM_IK_LERP * k;
-  }
-
-  /** Current per-hand orientation metrics ({facing,wind,curl,thumb,bend,roll}) + the live
-   *  calibration, for embedding in recordings / dumps / screenshots (the accuracy dataset). */
+  /** Per-hand orientation metrics + PER-SIDE calibration, for HUD / dumps / screenshots. */
   getMetrics() {
+    const cm = (c) => ({
+      rollDeg: c.orientCalib.rollDeg, pitchDeg: c.orientCalib.pitchDeg, yawDeg: c.orientCalib.yawDeg,
+      curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg,
+      thumbCurl: c.thumbCurl, thumbSpread: c.thumbSpread, reachDepth: c.reachDepth, reachGain: c.reachGain,
+      wristFlip: c.wristFlip, deformGuard: c.deformGuard, guardStrictness: c.guardStrictness, smoothing: c.smoothing,
+    });
     return {
       Right: this._handDbg.Right, Left: this._handDbg.Left,
-      calibration: {
-        rollDeg: this._orientCalib.rollDeg, pitchDeg: this._orientCalib.pitchDeg,
-        yawDeg: this._orientCalib.yawDeg,
-        curlGain: this._curlGain, spreadGain: this._spreadGain, thumbDeg: this._thumbDeg,
-        thumbCurl: this._thumbCurl, thumbSpread: this._thumbSpread,
-        reachDepth: this._reachDepth, reachGain: this._reachGain,
-        wristFlip: this._wristFlip, deformGuard: this._deformGuard,
-        guardStrictness: this._guardStrictness, smoothing: this._smoothing,
-      },
+      calibration: { Right: cm(this._sideCal.Right), Left: cm(this._sideCal.Left) },
     };
   }
   reset() {
@@ -762,12 +732,14 @@ export class SMPLXRetarget {
     vrm.scene.updateMatrixWorld(true);
 
     if (signerRightArmOn && rightTargetScreen) {
+      this._activate("Right");
       this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21));
     } else if (this._avatar) {
       this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
 
     if (signerLeftArmOn && leftTargetScreen) {
+      this._activate("Left");
       this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21));
     } else if (this._avatar) {
       this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
@@ -777,7 +749,7 @@ export class SMPLXRetarget {
     // Hands: prefer 3D world landmarks (HandLandmarker); fall back to Kalidokit.
     this._handDbg.Left = null; this._handDbg.Right = null;
     if (rightHandWorld && rightHandWorld.length >= 21) {
-      this._driveHand(vrm, "Right", rightHandWorld); riggedRightHand = true;
+      this._activate("Right"); this._driveHand(vrm, "Right", rightHandWorld); riggedRightHand = true;
     } else if (handDetected(rightHandLandmarks)) {
       this._writeHand(vrm, "Right", Kalidokit.Hand.solve(rightHandLandmarks, "Right"));
       riggedRightHand = true;
@@ -785,7 +757,7 @@ export class SMPLXRetarget {
       this._avatar.restFingers("Right", 0.25); // no hand → fingers relax to rest
     }
     if (leftHandWorld && leftHandWorld.length >= 21) {
-      this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
+      this._activate("Left"); this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
     } else if (handDetected(leftHandLandmarks)) {
       this._writeHand(vrm, "Left", Kalidokit.Hand.solve(leftHandLandmarks, "Left"));
       riggedLeftHand = true;
@@ -802,9 +774,10 @@ export class SMPLXRetarget {
     const hd = (s) => { const d = this._handDbg[s];
       return d ? `face:${d.facing} palmN:[${d.palmN.join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°`
                : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
-    const oc = this._orientCalib;
+    const calLine = (side) => { const c = this._sideCal[side], o = c.orientCalib;
+      return `calib[${side[0]}] roll:${Math.round(o.rollDeg)}° pitch:${Math.round(o.pitchDeg)}° yaw:${Math.round(o.yawDeg)}° flip:${c.wristFlip ? 'on' : 'off'}  curl:${c.curlGain.toFixed(2)} spread:${c.spreadGain.toFixed(2)} thumb:${Math.round(c.thumbDeg)}°(c${c.thumbCurl.toFixed(2)}/s${c.thumbSpread.toFixed(2)})  depth:${c.reachDepth.toFixed(2)} ext:${c.reachGain.toFixed(2)} guard:${c.deformGuard ? 'on' : 'off'}×${c.guardStrictness.toFixed(2)} smooth:${Math.round(c.smoothing * 100)}%`; };
     this._lastDebug =
-        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°(c${this._thumbCurl.toFixed(2)}/s${this._thumbSpread.toFixed(2)})  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'} guard:${this._deformGuard ? 'on' : 'off'}×${this._guardStrictness.toFixed(2)}  smooth:${Math.round(this._smoothing * 100)}%`
+        calLine('Right') + `\n` + calLine('Left')
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
