@@ -47,12 +47,13 @@ let inited = false;
 // Manual calibration (user sliders), persisted across sessions. Defaults reproduce the
 // current render exactly (180° roll, gains 1, thumb 0°, reach = engine constants).
 const CALIB_KEY = 'sgsl.calib.v1';
+// Calibrated baseline (tuned live by the signer, 2026-06). New users + Reset start here.
 const CALIB_DEFAULTS = {
-  rollDeg: 180, pitchDeg: 0, yawDeg: 0, wristFlip: false,   // orientation
-  deformGuard: true,                           // anatomical clamps (anti-deformation)
-  curlGain: 1, spreadGain: 1, thumbDeg: 0,     // fingers / thumb
-  reachDepth: 1.2, reachGain: 1.15,            // reach (= BOX_DEPTH / REACH_GAIN)
-  smoothing: 0,                                // stability
+  rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
+  deformGuard: true,                                 // anatomical clamps (anti-deformation)
+  curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25,    // fingers / thumb
+  reachDepth: 0.90, reachGain: 1.00,                 // reach
+  smoothing: 0.75,                                   // stability
 };
 let calibSettings = { ...CALIB_DEFAULTS };
 
