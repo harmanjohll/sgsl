@@ -110,6 +110,14 @@ const FINGER_SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,
 const WIND_SIGN = { Left: -1, Right: -1 };
 const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
 
+// Deformation guard — anatomical clamps so the VRM hand can't skin into a collapsed/twisted
+// pose when the orientation or curl is pushed to extremes (edge-on palm, hard fist, high gains).
+// Limits are generous: inactive on normal poses, so the default render is unchanged. A cap also
+// dodges the _aimBone antipodal singularity (target ≈ −rest → unstable 180° flip) on tight fists.
+const FINGER_MAX = [100, 120, 100].map(d => d * Math.PI / 180); // Proximal, Intermediate, Distal
+const THUMB_MAX  = [75, 85, 85].map(d => d * Math.PI / 180);
+const WRIST_MAX  = 65 * Math.PI / 180;   // hand-vs-forearm deviation from its rest relationship
+
 let oldLookTarget = new THREE.Euler();
 
 export class SMPLXRetarget {
@@ -147,7 +155,11 @@ export class SMPLXRetarget {
     this._reachDepth = BOX_DEPTH;   // signing-plane forward distance
     this._reachGain = REACH_GAIN;   // arm-reach scale (extension)
     this._wristFlip = false;        // mirror the hand mapping → reverse wrist-twist direction
+    this._deformGuard = true;       // anatomical clamps so the hand can't skin into a deformed pose
   }
+
+  /** Toggle the anatomical deformation guard (finger + wrist clamps). true = on (default). */
+  setDeformGuard(on) { this._deformGuard = !!on; }
 
   /** Manual hand-orientation calibration (degrees): roll about the finger axis, pitch about
    *  the across axis (tilt forward/back), yaw about the palm normal (deviation). Any subset.
@@ -198,7 +210,7 @@ export class SMPLXRetarget {
         yawDeg: this._orientCalib.yawDeg,
         curlGain: this._curlGain, spreadGain: this._spreadGain, thumbDeg: this._thumbDeg,
         reachDepth: this._reachDepth, reachGain: this._reachGain,
-        wristFlip: this._wristFlip, smoothing: this._smoothing,
+        wristFlip: this._wristFlip, deformGuard: this._deformGuard, smoothing: this._smoothing,
       },
     };
   }
@@ -341,14 +353,18 @@ export class SMPLXRetarget {
    * The minimal-rotation result ignores roll about the bone axis (wrist roll
    * comes from the hand solve), which is exactly what we want for placement.
    */
-  _aimBone(bone, restAxisLocal, worldDir, lerpAmount = ARM_IK_LERP) {
+  _aimBone(bone, restAxisLocal, worldDir, lerpAmount = ARM_IK_LERP, maxAngle = Math.PI) {
     if (!bone || !bone.parent) return;
     if (worldDir.lengthSq() < 1e-9) return;
     const pq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
     const localDir = worldDir.clone().applyQuaternion(pq.invert());
     if (localDir.lengthSq() < 1e-9) return;
     localDir.normalize();
-    const q = new THREE.Quaternion().setFromUnitVectors(restAxisLocal, localDir);
+    let q = new THREE.Quaternion().setFromUnitVectors(restAxisLocal, localDir);
+    if (maxAngle < Math.PI) {   // clamp the swing from rest to an anatomical max (deformation guard)
+      const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+      if (ang > maxAngle) q = new THREE.Quaternion().slerp(q, maxAngle / ang);
+    }
     bone.quaternion.slerp(q, lerpAmount);
   }
 
@@ -458,6 +474,19 @@ export class SMPLXRetarget {
     this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal, this._handLerp);
     hand.updateWorldMatrix(true, true);
 
+    // Wrist deformation guard: cap the hand's rotation away from its rest relationship to the
+    // forearm (hand.quaternion is hand-local relative to LowerArm = same frame as handBindLocal),
+    // so the VRM hand can't skin into a collapsed/twisted pose. Only fires when the forearm hasn't
+    // absorbed the twist (the deformation case); normal signs stay under the cap.
+    if (this._deformGuard && armRig?.handBindLocal) {
+      const dev = armRig.handBindLocal.clone().invert().multiply(hand.quaternion);
+      const ang = 2 * Math.acos(Math.min(1, Math.abs(dev.w)));
+      if (ang > WRIST_MAX) {
+        hand.quaternion.copy(armRig.handBindLocal).multiply(new THREE.Quaternion().slerp(dev, WRIST_MAX / ang));
+        hand.updateWorldMatrix(true, true);
+      }
+    }
+
     // Fingers + thumb: DIRECT HAND-LOCAL AIM. Aim each bone so it points along its
     // real landmark segment, re-expressed through the avatar hand's frame — so curl,
     // splay and (critically) thumb opposition reproduce exactly, with no per-joint
@@ -504,7 +533,8 @@ export class SMPLXRetarget {
         if (d.lengthSq() < 1e-12) continue;
         const dir = toHand(d.normalize());
         if (swing) dir.applyAxisAngle(Za, swing); // swing the thumb across the palm plane
-        this._aimBone(bone, fr.fwdLocal, dir, this._handLerp);
+        const maxA = this._deformGuard ? (f === 'Thumb' ? THUMB_MAX : FINGER_MAX)[i] : Math.PI;
+        this._aimBone(bone, fr.fwdLocal, dir, this._handLerp, maxA);
         bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
       }
     }
@@ -758,7 +788,7 @@ export class SMPLXRetarget {
                : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
     const oc = this._orientCalib;
     this._lastDebug =
-        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'}  smooth:${Math.round(this._smoothing * 100)}%`
+        `calib  roll:${Math.round(oc.rollDeg)}° pitch:${Math.round(oc.pitchDeg)}° yaw:${Math.round(oc.yawDeg)}°  curl:${this._curlGain.toFixed(2)} spread:${this._spreadGain.toFixed(2)} thumb:${Math.round(this._thumbDeg)}°  depth:${this._reachDepth.toFixed(2)} ext:${this._reachGain.toFixed(2)} wristFlip:${this._wristFlip ? 'on' : 'off'} guard:${this._deformGuard ? 'on' : 'off'}  smooth:${Math.round(this._smoothing * 100)}%`
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
       + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`

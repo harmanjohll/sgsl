@@ -49,6 +49,7 @@ let inited = false;
 const CALIB_KEY = 'sgsl.calib.v1';
 const CALIB_DEFAULTS = {
   rollDeg: 180, pitchDeg: 0, yawDeg: 0, wristFlip: false,   // orientation
+  deformGuard: true,                           // anatomical clamps (anti-deformation)
   curlGain: 1, spreadGain: 1, thumbDeg: 0,     // fingers / thumb
   reachDepth: 1.2, reachGain: 1.15,            // reach (= BOX_DEPTH / REACH_GAIN)
   smoothing: 0,                                // stability
@@ -921,6 +922,7 @@ function applyCalibSettings() {
   retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg });
   retarget?.setReach?.({ depth: c.reachDepth, gain: c.reachGain });
   retarget?.setWristFlip?.(c.wristFlip);
+  retarget?.setDeformGuard?.(c.deformGuard);
   retarget?.setSmoothing?.(c.smoothing);
 }
 function wireCalibControls() {
@@ -943,7 +945,17 @@ function wireCalibControls() {
   wire('curl', 'curlGain', gain); wire('spread', 'spreadGain', gain); wire('thumb', 'thumbDeg', deg);
   wire('depth', 'reachDepth', num); wire('ext', 'reachGain', num);
   wire('smooth', 'smoothing', pct);
-  // Wrist-rotation toggle (a button, not a slider): flips the twist direction.
+  // Toggle buttons (not sliders): each flips a boolean and relabels.
+  const wireToggle = (id, key, label) => {
+    const btn = document.getElementById(id);
+    const sync = () => { if (btn) btn.textContent = `${label}: ${calibSettings[key] ? 'On' : 'Off'}`; };
+    sync(); syncs.push(sync);
+    btn?.addEventListener('click', () => {
+      calibSettings[key] = !calibSettings[key];
+      sync(); applyCalibSettings(); saveCalibSettings();
+    });
+  };
+  // Wrist rotation reads Normal/Flipped rather than Off/On.
   const wf = document.getElementById('calib-wristflip');
   const syncWf = () => { if (wf) wf.textContent = `Wrist rotation: ${calibSettings.wristFlip ? 'Flipped' : 'Normal'}`; };
   syncWf(); syncs.push(syncWf);
@@ -951,6 +963,7 @@ function wireCalibControls() {
     calibSettings.wristFlip = !calibSettings.wristFlip;
     syncWf(); applyCalibSettings(); saveCalibSettings();
   });
+  wireToggle('calib-deformguard', 'deformGuard', 'Deformation guard');
   document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
     calibSettings = { ...CALIB_DEFAULTS };
     syncs.forEach((s) => s());
@@ -999,7 +1012,7 @@ function captureScreenshot() {
     ctx.fillStyle = '#ffd479'; ctx.fillText(
       `calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
       + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°`
-      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
+      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'} guard:${cal.deformGuard === false ? 'off' : 'on'}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
       10, H + 18);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);
