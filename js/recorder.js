@@ -30,6 +30,7 @@ let camera = null;
 // pose + face. Loaded lazily; hands fall back to Holistic if it fails.
 let handLandmarker = null;
 let lastHandResult = null;
+let handFrameCtr = 0;   // throttles the HandLandmarker to every other frame (perf)
 const HAND_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 // Flip if the live diagnostic shows the hands reversed (MediaPipe handedness
@@ -51,8 +52,10 @@ const CALIB_KEY = 'sgsl.calib.v1';
 const CALIB_DEFAULTS = {
   rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
   deformGuard: true,                                 // anatomical clamps (anti-deformation)
-  curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25,    // fingers / thumb
+  curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25,    // fingers
+  thumbCurl: 0.70, thumbSpread: 0.80,                // thumb (decoupled from fingers)
   reachDepth: 0.90, reachGain: 1.00,                 // reach
+  guardStrictness: 1,                                // deformation-guard strength
   smoothing: 0.75,                                   // stability
 };
 let calibSettings = { ...CALIB_DEFAULTS };
@@ -143,7 +146,8 @@ async function setupMediaPipe() {
     smoothLandmarks: true,
     enableSegmentation: false,
     smoothSegmentation: false,
-    refineFaceLandmarks: true,
+    refineFaceLandmarks: false,  // skip the iris/lip refinement pass (not load-bearing for signing) — perf
+
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
   });
@@ -154,7 +158,10 @@ async function setupMediaPipe() {
     // @ts-ignore — loaded via CDN
     camera = new window.Camera(videoEl, {
       onFrame: async () => {
-        if (handLandmarker && videoEl.readyState >= 2) {
+        // Lighten the load: the 3D HandLandmarker runs every OTHER frame (~15fps), reusing the
+        // last result between — smoothing hides the gap, and it halves the cost of running two
+        // heavy models together (the cause of the slow, erratic drift after long sessions).
+        if (handLandmarker && videoEl.readyState >= 2 && (handFrameCtr++ & 1) === 0) {
           try { lastHandResult = handLandmarker.detectForVideo(videoEl, performance.now()); }
           catch (e) { /* transient — keep last result */ }
         }
@@ -920,10 +927,11 @@ function saveCalibSettings() {
 function applyCalibSettings() {
   const c = calibSettings;
   retarget?.setOrientationCalibration?.({ rollDeg: c.rollDeg, pitchDeg: c.pitchDeg, yawDeg: c.yawDeg });
-  retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg });
+  retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg, thumbCurl: c.thumbCurl, thumbSpread: c.thumbSpread });
   retarget?.setReach?.({ depth: c.reachDepth, gain: c.reachGain });
   retarget?.setWristFlip?.(c.wristFlip);
   retarget?.setDeformGuard?.(c.deformGuard);
+  retarget?.setGuardStrictness?.(c.guardStrictness);
   retarget?.setSmoothing?.(c.smoothing);
 }
 function wireCalibControls() {
@@ -944,8 +952,9 @@ function wireCalibControls() {
   };
   wire('roll', 'rollDeg', deg); wire('pitch', 'pitchDeg', deg); wire('yaw', 'yawDeg', deg);
   wire('curl', 'curlGain', gain); wire('spread', 'spreadGain', gain); wire('thumb', 'thumbDeg', deg);
+  wire('thumbcurl', 'thumbCurl', gain); wire('thumbspread', 'thumbSpread', gain);
   wire('depth', 'reachDepth', num); wire('ext', 'reachGain', num);
-  wire('smooth', 'smoothing', pct);
+  wire('guardstr', 'guardStrictness', pct); wire('smooth', 'smoothing', pct);
   // Toggle buttons (not sliders): each flips a boolean and relabels.
   const wireToggle = (id, key, label) => {
     const btn = document.getElementById(id);
@@ -1012,8 +1021,8 @@ function captureScreenshot() {
     const cnum = (v, d) => (typeof v === 'number' ? v : d);
     ctx.fillStyle = '#ffd479'; ctx.fillText(
       `calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
-      + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°`
-      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'} guard:${cal.deformGuard === false ? 'off' : 'on'}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
+      + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°(c${cnum(cal.thumbCurl, 1).toFixed(2)}/s${cnum(cal.thumbSpread, 1).toFixed(2)})`
+      + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'} guard:${cal.deformGuard === false ? 'off' : 'on'}×${cnum(cal.guardStrictness, 1).toFixed(2)}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
       10, H + 18);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`RIGHT  ${fmt(m.Right)}`, 10, H + 42);
     ctx.fillStyle = '#9fd0ff'; ctx.fillText(`LEFT   ${fmt(m.Left)}`, 10, H + 66);

@@ -114,9 +114,17 @@
             <input type="range" id="calib-spread" min="0.5" max="2" step="0.05" value="0.8">
             <span id="calib-spread-label">0.80×</span>
           </label>
-          <label class="speed-control">Thumb:
+          <label class="speed-control">Thumb swing:
             <input type="range" id="calib-thumb" min="-60" max="60" step="5" value="25">
             <span id="calib-thumb-label">25°</span>
+          </label>
+          <label class="speed-control">Thumb curl:
+            <input type="range" id="calib-thumbcurl" min="0.5" max="2" step="0.05" value="0.7">
+            <span id="calib-thumbcurl-label">0.70×</span>
+          </label>
+          <label class="speed-control">Thumb spread:
+            <input type="range" id="calib-thumbspread" min="0.5" max="2" step="0.05" value="0.8">
+            <span id="calib-thumbspread-label">0.80×</span>
           </label>
           <div class="calib-group-title">Reach</div>
           <label class="speed-control">Depth (forward):
@@ -133,6 +141,10 @@
             <span id="calib-smooth-label">75%</span>
           </label>
           <button id="calib-deformguard" class="btn">Deformation guard: On</button>
+          <label class="speed-control">Guard strength:
+            <input type="range" id="calib-guardstr" min="0" max="1" step="0.05" value="1">
+            <span id="calib-guardstr-label">100%</span>
+          </label>
           <div class="rec-btn-row">
             <button id="btn-calib-reset" class="btn">Reset calibration</button>
             <button id="btn-screenshot" class="btn">📷 Screenshot</button>
