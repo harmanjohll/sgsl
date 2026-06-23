@@ -141,7 +141,7 @@ export class SMPLXRetarget {
     this._calib = null;
     // Manual hand-orientation calibration (user sliders) — roll/pitch/yaw about the hand's
     // own axes (finger / across / palm-normal). Defaults reproduce the current render.
-    this._orientCalib = { rollDeg: DEFAULT_ROLL_DEG, pitchDeg: 0, yawDeg: 0 };
+    this._orientCalib = { rollDeg: -170, pitchDeg: 10, yawDeg: 25 };
     // Stability: 0 = responsive (the original slerp rates), 1 = very smooth (more lag).
     // Effective per-frame slerp amounts derived from it; defaults reproduce the originals.
     this._smoothing = 0;
@@ -149,12 +149,12 @@ export class SMPLXRetarget {
     this._armLerp = ARM_IK_LERP;
     // Finger/thumb shaping + reach (user sliders). Defaults are identities (no-op): gains 1,
     // thumb 0°, reach = the original BOX_DEPTH / REACH_GAIN constants.
-    this._curlGain = 1;      // scales finger bend toward the palm (handshape tightness)
-    this._spreadGain = 1;    // scales lateral finger splay
-    this._thumbDeg = 0;      // swings the thumb across the palm (abduction/adduction)
-    this._reachDepth = BOX_DEPTH;   // signing-plane forward distance
-    this._reachGain = REACH_GAIN;   // arm-reach scale (extension)
-    this._wristFlip = false;        // mirror the hand mapping → reverse wrist-twist direction
+    this._curlGain = 0.70;   // scales finger bend toward the palm (handshape tightness)
+    this._spreadGain = 0.80; // scales lateral finger splay
+    this._thumbDeg = 25;     // swings the thumb across the palm (abduction/adduction)
+    this._reachDepth = 0.90; // signing-plane forward distance (calibrated default)
+    this._reachGain = 1.00;  // arm-reach scale (extension, calibrated default)
+    this._wristFlip = true;         // mirror the hand mapping → reverse wrist-twist direction
     this._deformGuard = true;       // anatomical clamps so the hand can't skin into a deformed pose
   }
 
