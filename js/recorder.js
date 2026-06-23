@@ -58,7 +58,8 @@ const CALIB_DEFAULTS = {
   guardStrictness: 1,                                // deformation-guard strength
   smoothing: 0.75,                                   // stability
 };
-let calibSettings = { ...CALIB_DEFAULTS };
+let calibSide = 'Right';   // which hand the calibration sliders currently edit
+let calibSettings = { Right: { ...CALIB_DEFAULTS }, Left: { ...CALIB_DEFAULTS } };
 
 // Temporary live IK diagnostic (set false to hide). Draws a ring on each
 // hand showing which avatar arm it drives and whether that arm is "on".
@@ -300,7 +301,7 @@ function stopHandDump() {
     setRecStatus('⚠ No hands captured — nothing to send. Raise your hand so the avatar mirrors it in 3D (overlay "world R/L: y") BEFORE clicking Dump, then retry.', 'error');
     return;
   }
-  const payload = { kind: 'sgsl-hand-dump', version: 4, interval_ms: DUMP_INTERVAL, calibrationSettings: { ...calibSettings }, frames: dumpFrames };
+  const payload = { kind: 'sgsl-hand-dump', version: 5, interval_ms: DUMP_INTERVAL, calibrationSettings: { ...calibSettings }, frames: dumpFrames };
   const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -908,45 +909,48 @@ function discardRecording() {
 }
 
 // ─── Manual calibration + stability + data capture ──────────
+const mergeSide = (src) => {   // fill a side from saved values, falling back to CALIB_DEFAULTS
+  const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+  const out = {};
+  for (const k of Object.keys(CALIB_DEFAULTS)) {
+    const d = CALIB_DEFAULTS[k];
+    out[k] = (typeof d === 'boolean') ? (typeof src?.[k] === 'boolean' ? src[k] : d) : num(src?.[k], d);
+  }
+  return out;
+};
 function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
-    if (s && typeof s === 'object') {
-      const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
-      calibSettings = {};
-      for (const k of Object.keys(CALIB_DEFAULTS)) {
-        const d = CALIB_DEFAULTS[k];
-        calibSettings[k] = (typeof d === 'boolean') ? (typeof s[k] === 'boolean' ? s[k] : d) : num(s[k], d);
-      }
+    if (!s || typeof s !== 'object') return;
+    if (s.Right || s.Left) {                       // per-side format
+      calibSettings = { Right: mergeSide(s.Right), Left: mergeSide(s.Left) };
+      if (s.side === 'Left' || s.side === 'Right') calibSide = s.side;
+    } else {                                       // migrate old single-set format → both hands
+      const flat = mergeSide(s);
+      calibSettings = { Right: flat, Left: { ...flat } };
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
 function saveCalibSettings() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify(calibSettings)); } catch { /* private mode */ }
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide })); } catch { /* private mode */ }
 }
-function applyCalibSettings() {
-  const c = calibSettings;
-  retarget?.setOrientationCalibration?.({ rollDeg: c.rollDeg, pitchDeg: c.pitchDeg, yawDeg: c.yawDeg });
-  retarget?.setFingerCalibration?.({ curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg, thumbCurl: c.thumbCurl, thumbSpread: c.thumbSpread });
-  retarget?.setReach?.({ depth: c.reachDepth, gain: c.reachGain });
-  retarget?.setWristFlip?.(c.wristFlip);
-  retarget?.setDeformGuard?.(c.deformGuard);
-  retarget?.setGuardStrictness?.(c.guardStrictness);
-  retarget?.setSmoothing?.(c.smoothing);
+function applyCalibSettings() {   // push BOTH hands' calibration to the retarget
+  for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, calibSettings[side]);
 }
 function wireCalibControls() {
   // Generic slider wiring: live label (via fmt), retarget update, persist. One per knob.
   const deg = (v) => `${Math.round(v)}°`, gain = (v) => `${v.toFixed(2)}×`,
         num = (v) => v.toFixed(2), pct = (v) => `${Math.round(v * 100)}%`;
   const syncs = [];
+  const cur = () => calibSettings[calibSide];   // the side currently being edited
   const wire = (id, key, fmt) => {
     const inp = document.getElementById(`calib-${id}`);
     const lbl = document.getElementById(`calib-${id}-label`);
-    const sync = () => { if (inp) inp.value = calibSettings[key]; if (lbl) lbl.textContent = fmt(calibSettings[key]); };
+    const sync = () => { if (inp) inp.value = cur()[key]; if (lbl) lbl.textContent = fmt(cur()[key]); };
     sync(); syncs.push(sync);
     inp?.addEventListener('input', () => {
-      calibSettings[key] = parseFloat(inp.value);
-      if (lbl) lbl.textContent = fmt(calibSettings[key]);
+      cur()[key] = parseFloat(inp.value);
+      if (lbl) lbl.textContent = fmt(cur()[key]);
       applyCalibSettings(); saveCalibSettings();
     });
   };
@@ -958,27 +962,36 @@ function wireCalibControls() {
   // Toggle buttons (not sliders): each flips a boolean and relabels.
   const wireToggle = (id, key, label) => {
     const btn = document.getElementById(id);
-    const sync = () => { if (btn) btn.textContent = `${label}: ${calibSettings[key] ? 'On' : 'Off'}`; };
+    const sync = () => { if (btn) btn.textContent = `${label}: ${cur()[key] ? 'On' : 'Off'}`; };
     sync(); syncs.push(sync);
     btn?.addEventListener('click', () => {
-      calibSettings[key] = !calibSettings[key];
+      cur()[key] = !cur()[key];
       sync(); applyCalibSettings(); saveCalibSettings();
     });
   };
   // Wrist rotation reads Normal/Flipped rather than Off/On.
   const wf = document.getElementById('calib-wristflip');
-  const syncWf = () => { if (wf) wf.textContent = `Wrist rotation: ${calibSettings.wristFlip ? 'Flipped' : 'Normal'}`; };
+  const syncWf = () => { if (wf) wf.textContent = `Wrist rotation: ${cur().wristFlip ? 'Flipped' : 'Normal'}`; };
   syncWf(); syncs.push(syncWf);
   wf?.addEventListener('click', () => {
-    calibSettings.wristFlip = !calibSettings.wristFlip;
+    cur().wristFlip = !cur().wristFlip;
     syncWf(); applyCalibSettings(); saveCalibSettings();
   });
   wireToggle('calib-deformguard', 'deformGuard', 'Deformation guard');
+  // Hand selector: switch which hand the whole panel edits; re-sync every control to that side.
+  const handBtn = document.getElementById('calib-handsel');
+  const syncHand = () => { if (handBtn) handBtn.textContent = `Calibrating: ${calibSide} hand ⇄`; };
+  syncHand();
+  handBtn?.addEventListener('click', () => {
+    calibSide = calibSide === 'Right' ? 'Left' : 'Right';
+    syncHand(); syncs.forEach((s) => s()); saveCalibSettings();
+    setRecStatus(`Now calibrating your ${calibSide} hand.`, 'info');
+  });
   document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
-    calibSettings = { ...CALIB_DEFAULTS };
+    calibSettings[calibSide] = { ...CALIB_DEFAULTS };
     syncs.forEach((s) => s());
     applyCalibSettings(); saveCalibSettings();
-    setRecStatus('Calibration reset to defaults.', 'info');
+    setRecStatus(`${calibSide} hand calibration reset to defaults.`, 'info');
   });
   document.getElementById('btn-screenshot')?.addEventListener('click', captureScreenshot);
 }
@@ -1015,12 +1028,12 @@ function captureScreenshot() {
     if (avCanvas) ctx.drawImage(avCanvas, camW, 0, avW, avH);
     ctx.fillStyle = '#0a0c14'; ctx.fillRect(0, H, out.width, footer);
     const m = retarget?.getMetrics?.() || {};
-    const cal = m.calibration || calibSettings;
+    const cal = (m.calibration && (m.calibration[calibSide] || m.calibration.Right)) || calibSettings[calibSide] || {};
     const fmt = (d) => d ? `face:${d.facing} palmN:[${(d.palmN || []).join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°` : '—';
     ctx.font = '13px monospace'; ctx.textBaseline = 'middle';
     const cnum = (v, d) => (typeof v === 'number' ? v : d);
     ctx.fillStyle = '#ffd479'; ctx.fillText(
-      `calib  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
+      `calib[${calibSide}]  roll:${Math.round(cal.rollDeg)}° pitch:${Math.round(cal.pitchDeg || 0)}° yaw:${Math.round(cal.yawDeg || 0)}°`
       + `  curl:${cnum(cal.curlGain, 1).toFixed(2)} spread:${cnum(cal.spreadGain, 1).toFixed(2)} thumb:${Math.round(cal.thumbDeg || 0)}°(c${cnum(cal.thumbCurl, 1).toFixed(2)}/s${cnum(cal.thumbSpread, 1).toFixed(2)})`
       + `  depth:${cnum(cal.reachDepth, 1.2).toFixed(2)} ext:${cnum(cal.reachGain, 1.15).toFixed(2)} wristFlip:${cal.wristFlip ? 'on' : 'off'} guard:${cal.deformGuard === false ? 'off' : 'on'}×${cnum(cal.guardStrictness, 1).toFixed(2)}  smooth:${Math.round((cal.smoothing || 0) * 100)}%`,
       10, H + 18);
@@ -1036,7 +1049,7 @@ function captureScreenshot() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
     out.toBlob((blob) => { if (blob) dl(blob, `sgsl-${label}.png`); }, 'image/png');
-    const meta = { kind: 'sgsl-screenshot-meta', t: new Date().toISOString(), label, calibration: cal, metrics: { Right: m.Right || null, Left: m.Left || null } };
+    const meta = { kind: 'sgsl-screenshot-meta', t: new Date().toISOString(), label, calibration: m.calibration || calibSettings, metrics: { Right: m.Right || null, Left: m.Left || null } };
     dl(new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }), `sgsl-${label}.json`);
     setRecStatus(`Screenshot + metrics saved (sgsl-${label}.png/.json).`, 'success');
   } catch (e) {
