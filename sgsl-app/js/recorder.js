@@ -143,7 +143,8 @@ async function setupMediaPipe() {
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file}`,
   });
   holisticModel.setOptions({
-    modelComplexity: 1,
+    modelComplexity: 0,  // lite pose model — big main-thread compute cut (curbs the long-session
+                         // slowdown); slightly noisier shoulders. Revert to 1 if arm tracking suffers.
     smoothLandmarks: true,
     enableSegmentation: false,
     smoothSegmentation: false,
