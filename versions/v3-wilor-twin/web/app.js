@@ -43,7 +43,8 @@ retarget.setVideo(video);
 retarget.setAvatar(avatar);
 
 // ── In-browser tracking (v2 worker) ────────────────────────────────────────
-const worker = new Worker(new URL('../../v2-tasks-worker/js/track-worker.js', import.meta.url), { type: 'module' });
+// Classic worker (see v2 app.js): MediaPipe needs importScripts(), forbidden in module workers.
+const worker = new Worker(new URL('../../v2-tasks-worker/js/track-worker.js', import.meta.url));
 let workerReady = false, inFlight = false, tsCtr = 0;
 
 // ── WiLoR server (deferred GPU) ────────────────────────────────────────────
