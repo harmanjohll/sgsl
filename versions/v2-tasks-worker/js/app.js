@@ -41,12 +41,23 @@ let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
 let tsCtr = 0;
 
+// Surface worker-load failures that would otherwise be SILENT (e.g. the module
+// worker failing to instantiate, or a bad MIME type from the static server).
+worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console for details)`, 'error');
+worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
+
 worker.onmessage = (e) => {
   const msg = e.data;
   if (!msg) return;
+  if (msg.type === 'status') {
+    // Show load progress so a stall is visible (which model, GPU/CPU, etc.).
+    if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
+    if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
+    return;
+  }
   if (msg.type === 'ready') {
     workerReady = true;
-    setStatus('Tracking model ready — raise a hand; the avatar mirrors you.', 'success');
+    setStatus('Tracking ready — raise a hand; the avatar mirrors you.', 'success');
     return;
   }
   if (msg.type === 'error') {
@@ -139,7 +150,7 @@ function applyCalib() {
 const cur = () => calib[side];
 
 function wireCalib() {
-  const bind = (id, key, fmt, scale = 1) => {
+  const bind = (id, key, fmt) => {
     const el = document.getElementById(id);
     const lab = document.getElementById(id + '-label');
     if (!el) return;
