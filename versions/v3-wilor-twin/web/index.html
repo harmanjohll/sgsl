@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SgSL v3 — WiLoR twin (scaffold)</title>
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Same global libs as v1/v2 (retarget.js + avatar.js need the THREE global +
+       the kalidokit importmap). In-browser pose/face/hands via the v2 worker; hands
+       are overridden by the WiLoR GPU server when it is running. -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@0.6.7/lib/three-vrm.js"></script>
+  <script type="importmap">
+  { "imports": { "kalidokit": "https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.es.js" } }
+  </script>
+
+  <style>
+    .v3-wrap { display: flex; gap: 16px; padding: 16px; height: calc(100vh - 58px); }
+    .v3-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .v3-col.cam { width: 360px; flex: none; }
+    .v3-col.view { flex: 1; }
+    .v3-camera { position: relative; border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 4/3; }
+    #v3-video, #v3-overlay { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+    #v3-video { object-fit: cover; }
+    #v3-overlay { pointer-events: none; }
+    #v3-avatar-viewport { flex: 1; border-radius: 12px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); min-height: 400px; }
+    #v3-debug { font: 11px/1.3 monospace; color: #88aacc; background: #111; padding: 8px; border-radius: 6px; max-height: 220px; overflow: auto; white-space: pre-wrap; }
+    #v3-source { font: 600 13px/1.4 Inter, sans-serif; }
+    .v3-note { font-size: 12px; color: var(--warning); }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>SgSL · Fumi <span style="color:var(--text-dim);font-size:14px;">— v3 WiLoR twin (scaffold, GPU deferred)</span></h1>
+  </header>
+
+  <div class="v3-wrap">
+    <section class="v3-col cam">
+      <div class="v3-camera">
+        <video id="v3-video" playsinline muted></video>
+        <canvas id="v3-overlay"></canvas>
+      </div>
+      <div id="v3-source">Hands: in-browser (server offline)</div>
+      <div id="v3-status" class="status status-info">Starting…</div>
+      <p class="v3-note">Scaffold: runs today with in-browser hands. When the WiLoR GPU server in
+        <code>../server</code> is running, hands switch to WiLoR automatically.</p>
+    </section>
+    <section class="v3-col view">
+      <div id="v3-avatar-viewport"></div>
+      <pre id="v3-debug"></pre>
+    </section>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
