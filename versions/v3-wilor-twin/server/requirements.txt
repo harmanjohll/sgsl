@@ -1,0 +1,11 @@
+# SgSL v3 WiLoR twin server — minimal deps to exercise the WebSocket (CPU-only).
+fastapi>=0.110
+uvicorn[standard]>=0.27
+websockets>=12
+
+# ── Deferred until the GPU droplet is set up (WiLoR inference) ──
+# torch                 # CUDA build matching the droplet's GPU
+# torchvision
+# opencv-python-headless # JPEG decode
+# numpy
+# wilor                 # or install from the WiLoR repo; download model weights separately

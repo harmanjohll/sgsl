@@ -238,6 +238,16 @@ html, body {
 }
 .rec-input:focus { border-color: var(--accent); }
 .rec-btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.calib-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+}
+.calib-group-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--accent); margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border);
+}
+.calib-group-title:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .btn-record { background: #cc3344; border-color: #cc3344; color: #fff; font-weight: 600; }
 .btn-record:hover { background: #dd4455; }
 .btn-save { background: #339955; border-color: #339955; color: #fff; font-weight: 600; }

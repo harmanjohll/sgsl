@@ -42,14 +42,17 @@ export class SMPLXAvatar {
     const w = this.container.clientWidth || 400;
     const h = this.container.clientHeight || 520;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // preserveDrawingBuffer lets the recorder read the canvas into a screenshot composite.
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.container.innerHTML = '';
     this.container.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(30, w / h, 0.1, 1000);
-    this.camera.position.set(0.0, 1.35, 1.8);
+    this.camera.position.set(0.0, 1.3, 2.85); // pulled back further so Fumi is smaller and the full body fits
+    // (shrinks Fumi via camera distance, not vrm.scene.scale — scaling the model would desync
+    //  _solveArmIK, which mixes unscaled bone lengths L1/L2 with scaled world target distances.)
 
     this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
     this.controls.screenSpacePanning = true;
@@ -102,6 +105,8 @@ export class SMPLXAvatar {
 
           this._setRestPose(vrm);
           this._snapshotRestTargets(vrm);
+          this._measureArmRig(vrm);
+          this._measureHandRig(vrm);
 
           if (this._statusEl) { this._statusEl.remove(); this._statusEl = null; }
           this.loaded = true;
@@ -148,6 +153,115 @@ export class SMPLXAvatar {
     }
   }
 
+  /**
+   * Measure the arm rig once, at bind/rest, for the hands-first IK in
+   * retarget.js. Bone local positions are fixed bind offsets (they don't
+   * change with rotation), so L1/L2 and the rest axes are constants:
+   *   - L1 = shoulder→elbow length, L2 = elbow→wrist length
+   *   - upperRestAxis = local dir UpperArm→LowerArm (in UpperArm's frame)
+   *   - lowerRestAxis = local dir LowerArm→Hand   (in LowerArm's frame)
+   */
+  _measureArmRig(vrm) {
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const sides = {
+      Right: [BN.RightLowerArm, BN.RightHand],
+      Left:  [BN.LeftLowerArm,  BN.LeftHand],
+    };
+    this.armRig = {};
+    for (const side of ['Right', 'Left']) {
+      const [laName, haName] = sides[side];
+      const la = vrm.humanoid.getBoneNode(laName);
+      const ha = vrm.humanoid.getBoneNode(haName);
+      if (!la || !ha) continue;
+      const upperVec = la.position.clone();   // elbow offset in UpperArm local space
+      const lowerVec = ha.position.clone();    // wrist offset in LowerArm local space
+      this.armRig[side] = {
+        L1: upperVec.length() || 1e-4,
+        L2: lowerVec.length() || 1e-4,
+        upperRestAxis: upperVec.clone().normalize(),
+        lowerRestAxis: lowerVec.clone().normalize(),
+        // Hand's bind-pose local rotation (relative to LowerArm). Lets the retarget orient
+        // the forearm so the hand sits at its natural relationship → no wrist twist.
+        handBindLocal: ha.quaternion.clone(),
+      };
+    }
+  }
+
+  /**
+   * Measure the hand + finger rig (bind pose) for the 3D hand driver. Per side:
+   *   - fingerAxis: Hand-local dir toward the middle-finger knuckle  (hand aim)
+   *   - palmAxis  : Hand-local palm normal (finger × across-knuckles) (hand aim)
+   *   - fingers[name] = [bone0, bone1, bone2], each:
+   *       { restQ:  the bone's local rotation at rest,
+   *         flex:   LOCAL flexion axis — rotating about it curls the bone toward
+   *                 the palm. Derived as cross(bone-forward, palm-normal) in
+   *                 world, mapped to bone-local. This drives curl by ANGLE
+   *                 (rotation-invariant, no twist), decoupled from hand orient. }
+   */
+  _measureHandRig(vrm) {
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const node = (n) => vrm.humanoid.getBoneNode(BN[n]);
+    vrm.scene.updateMatrixWorld(true);
+    this.handRig = {};
+    for (const side of ['Right', 'Left']) {
+      const hand = node(`${side}Hand`);
+      const midProx = node(`${side}MiddleProximal`);
+      if (!hand || !midProx) continue;
+      const fingerAxis = midProx.position.clone().normalize();
+      let palmAxis = new THREE.Vector3(0, 0, 1);
+      const idxProx = node(`${side}IndexProximal`);
+      const litProx = node(`${side}LittleProximal`);
+      if (idxProx && litProx) {
+        const across = litProx.position.clone().sub(idxProx.position).normalize();
+        palmAxis = new THREE.Vector3().crossVectors(fingerAxis, across).normalize();
+      }
+      // Palm normal in WORLD at rest — defines the curl plane for every finger.
+      const handWQ = hand.getWorldQuaternion(new THREE.Quaternion());
+      const palmWorld = palmAxis.clone().applyQuaternion(handWQ).normalize();
+
+      const fingers = {};
+      for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+        const bones = [node(`${side}${f}Proximal`), node(`${side}${f}Intermediate`), node(`${side}${f}Distal`)];
+        if (!bones[0]) continue;
+        const arr = [];
+        for (let i = 0; i < 3; i++) {
+          const b = bones[i];
+          if (!b) { arr.push(null); continue; }
+          // bone forward = dir to child (or, for the tip, reuse the parent's).
+          const child = bones[i + 1];
+          const fwdLocal = child ? child.position.clone().normalize()
+            : (arr[i - 1]?.fwdLocal?.clone() || new THREE.Vector3(0, 1, 0));
+          const bq = b.getWorldQuaternion(new THREE.Quaternion());
+          const fwdWorld = fwdLocal.clone().applyQuaternion(bq).normalize();
+          let flexWorld = new THREE.Vector3().crossVectors(fwdWorld, palmWorld);
+          if (flexWorld.lengthSq() < 1e-9) flexWorld = new THREE.Vector3(1, 0, 0);
+          flexWorld.normalize();
+          const flex = flexWorld.applyQuaternion(bq.clone().invert()).normalize();
+          arr.push({ restQ: b.quaternion.clone(), flex, fwdLocal });
+        }
+        fingers[f] = arr;
+      }
+      this.handRig[side] = { fingerAxis, palmAxis, fingers };
+    }
+  }
+
+  /** Slerp a side's finger bones back to their rest pose (hand not tracked). */
+  restFingers(side, lerp = 0.3) {
+    const rig = this.handRig?.[side];
+    if (!rig || !this.vrm) return;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    for (const f of ['Thumb', 'Index', 'Middle', 'Ring', 'Little']) {
+      const arr = rig.fingers[f];
+      if (!arr) continue;
+      const names = ['Proximal', 'Intermediate', 'Distal'];
+      for (let i = 0; i < 3; i++) {
+        if (!arr[i]) continue;
+        const b = this.vrm.humanoid.getBoneNode(BN[`${side}${f}${names[i]}`]);
+        if (b) b.quaternion.slerp(arr[i].restQ, lerp);
+      }
+    }
+  }
+
   /** Called by the retarget layer each frame it writes bones. */
   markActive() { this._silentFrames = 0; }
 
@@ -179,4 +293,10 @@ export class SMPLXAvatar {
   }
 
   setPlaying(on) { this._playing = !!on; this._silentFrames = 0; }
+
+  /** Render the current avatar pose and return its canvas (for screenshot compositing). */
+  captureCanvas() {
+    if (this.renderer && this.scene && this.camera) this.renderer.render(this.scene, this.camera);
+    return this.renderer ? this.renderer.domElement : null;
+  }
 }

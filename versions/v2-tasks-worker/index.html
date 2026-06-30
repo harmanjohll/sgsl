@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SgSL v2 — Tasks-Vision worker (live mirror)</title>
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Same global libs as sgsl-app/index.html (retarget.js + avatar.js use the THREE
+       global + the kalidokit importmap). NOTE: legacy MediaPipe Holistic scripts are
+       intentionally OMITTED — v2 tracks with Tasks-Vision inside js/track-worker.js. -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@0.6.7/lib/three-vrm.js"></script>
+
+  <script type="importmap">
+  { "imports": { "kalidokit": "https://cdn.jsdelivr.net/npm/kalidokit@1.1.5/dist/kalidokit.es.js" } }
+  </script>
+
+  <style>
+    .v2-wrap { display: flex; gap: 16px; padding: 16px; height: calc(100vh - 58px); }
+    .v2-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .v2-col.cam { width: 380px; flex: none; overflow-y: auto; }
+    .v2-col.view { flex: 1; }
+    .v2-camera { position: relative; border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 4/3; }
+    #v2-video, #v2-overlay { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+    #v2-video { object-fit: cover; }
+    #v2-overlay { pointer-events: none; }
+    #v2-avatar-viewport { flex: 1; border-radius: 12px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); min-height: 400px; }
+    #v2-debug { font: 11px/1.3 monospace; color: #88aacc; background: #111; padding: 8px; border-radius: 6px; max-height: 220px; overflow: auto; white-space: pre-wrap; }
+    .v2-note { font-size: 12px; color: var(--warning); }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>SgSL · Fumi <span style="color:var(--text-dim);font-size:14px;">— v2 tasks-worker (experimental)</span></h1>
+  </header>
+
+  <div class="v2-wrap">
+    <section class="v2-col cam">
+      <div class="v2-camera">
+        <video id="v2-video" playsinline muted></video>
+        <canvas id="v2-overlay"></canvas>
+      </div>
+      <div id="v2-status" class="status status-info">Starting…</div>
+      <p class="v2-note">Experimental: tracking runs in a Web Worker (off the main thread).
+        Run several minutes and confirm motion stays smooth.</p>
+      <div class="rec-btn-row">
+        <button id="v2-rec" class="btn btn-record">● Record session</button>
+        <button id="v2-shot" class="btn">📷 Screenshot</button>
+      </div>
+
+      <!-- Compact calibration panel — same retarget setters as v1, so tuning carries. -->
+      <div class="calib-panel">
+        <button id="v2-handsel" class="btn">Calibrating: Right hand ⇄</button>
+        <div class="calib-group-title">Orientation</div>
+        <label class="speed-control">Palm rotation:
+          <input type="range" id="v2-roll" min="-180" max="180" step="5" value="-170">
+          <span id="v2-roll-label">-170°</span>
+        </label>
+        <label class="speed-control">Pitch (tilt):
+          <input type="range" id="v2-pitch" min="-90" max="90" step="5" value="10">
+          <span id="v2-pitch-label">10°</span>
+        </label>
+        <label class="speed-control">Yaw:
+          <input type="range" id="v2-yaw" min="-90" max="90" step="5" value="25">
+          <span id="v2-yaw-label">25°</span>
+        </label>
+        <button id="v2-wristflip" class="btn">Wrist rotation: Flipped</button>
+        <div class="calib-group-title">Fingers</div>
+        <label class="speed-control">Curl:
+          <input type="range" id="v2-curl" min="0.5" max="2" step="0.05" value="0.7">
+          <span id="v2-curl-label">0.70×</span>
+        </label>
+        <label class="speed-control">Spread:
+          <input type="range" id="v2-spread" min="0.5" max="2" step="0.05" value="0.8">
+          <span id="v2-spread-label">0.80×</span>
+        </label>
+        <div class="calib-group-title">Stability</div>
+        <label class="speed-control">Smoothing:
+          <input type="range" id="v2-smooth" min="0" max="1" step="0.05" value="0.75">
+          <span id="v2-smooth-label">75%</span>
+        </label>
+        <button id="v2-guard" class="btn">Deformation guard: On</button>
+        <div class="rec-btn-row">
+          <button id="v2-reset" class="btn">Reset calibration</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="v2-col view">
+      <div id="v2-avatar-viewport"></div>
+      <pre id="v2-debug"></pre>
+    </section>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

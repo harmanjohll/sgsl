@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# Local dev deps for tools/hand_fk_preview.mjs (npm i three pngjs) — not shipped
+node_modules/
+package-lock.json

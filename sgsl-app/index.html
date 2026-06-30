@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SgSL — Mei signs Singapore Sign Language</title>
+  <title>SgSL — Fumi signs Singapore Sign Language</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -28,7 +28,7 @@
 </head>
 <body>
   <header class="header">
-    <h1>SgSL · Mei</h1>
+    <h1>SgSL · Fumi</h1>
     <nav class="tabs">
       <button class="tab active" data-tab="signit">Sign It</button>
       <button class="tab" data-tab="record">Record</button>
@@ -39,7 +39,7 @@
   <!-- ─── Sign It: text -> sign ─────────────────────────────── -->
   <main id="tab-signit" class="main tab-content active">
     <section class="record-panel">
-      <h2 class="sidebar-title">Type — Mei signs it</h2>
+      <h2 class="sidebar-title">Type — Fumi signs it</h2>
       <div class="rec-label-row">
         <input type="text" id="signit-input" class="rec-input" placeholder="e.g. thank you, hello, one">
         <button id="btn-signit-play" class="btn btn-record">Sign</button>
@@ -88,6 +88,69 @@
           <input type="range" id="tolerance-slider" min="2" max="20" step="1" value="8">
           <span id="tolerance-label">8%</span>
         </label>
+        <!-- Manual calibration + stability: dial the hand orientation in by eye and steady
+             the avatar while the automatic math is being refined. Persisted in localStorage. -->
+        <div class="calib-panel">
+          <button id="calib-handsel" class="btn">Calibrating: Right hand ⇄</button>
+          <div class="calib-group-title">Orientation</div>
+          <label class="speed-control">Palm rotation:
+            <input type="range" id="calib-roll" min="-180" max="180" step="5" value="-170">
+            <span id="calib-roll-label">-170°</span>
+          </label>
+          <label class="speed-control">Pitch (tilt):
+            <input type="range" id="calib-pitch" min="-90" max="90" step="5" value="10">
+            <span id="calib-pitch-label">10°</span>
+          </label>
+          <label class="speed-control">Yaw:
+            <input type="range" id="calib-yaw" min="-90" max="90" step="5" value="25">
+            <span id="calib-yaw-label">25°</span>
+          </label>
+          <button id="calib-wristflip" class="btn">Wrist rotation: Flipped</button>
+          <div class="calib-group-title">Fingers</div>
+          <label class="speed-control">Curl:
+            <input type="range" id="calib-curl" min="0.5" max="2" step="0.05" value="0.7">
+            <span id="calib-curl-label">0.70×</span>
+          </label>
+          <label class="speed-control">Spread:
+            <input type="range" id="calib-spread" min="0.5" max="2" step="0.05" value="0.8">
+            <span id="calib-spread-label">0.80×</span>
+          </label>
+          <label class="speed-control">Thumb swing:
+            <input type="range" id="calib-thumb" min="-60" max="60" step="5" value="25">
+            <span id="calib-thumb-label">25°</span>
+          </label>
+          <label class="speed-control">Thumb curl:
+            <input type="range" id="calib-thumbcurl" min="0.5" max="2" step="0.05" value="0.7">
+            <span id="calib-thumbcurl-label">0.70×</span>
+          </label>
+          <label class="speed-control">Thumb spread:
+            <input type="range" id="calib-thumbspread" min="0.5" max="2" step="0.05" value="0.8">
+            <span id="calib-thumbspread-label">0.80×</span>
+          </label>
+          <div class="calib-group-title">Reach</div>
+          <label class="speed-control">Depth (forward):
+            <input type="range" id="calib-depth" min="0.4" max="2.5" step="0.05" value="0.9">
+            <span id="calib-depth-label">0.90</span>
+          </label>
+          <label class="speed-control">Extension:
+            <input type="range" id="calib-ext" min="0.7" max="1.8" step="0.05" value="1.0">
+            <span id="calib-ext-label">1.00</span>
+          </label>
+          <div class="calib-group-title">Stability</div>
+          <label class="speed-control">Smoothing:
+            <input type="range" id="calib-smooth" min="0" max="1" step="0.05" value="0.75">
+            <span id="calib-smooth-label">75%</span>
+          </label>
+          <button id="calib-deformguard" class="btn">Deformation guard: On</button>
+          <label class="speed-control">Guard strength:
+            <input type="range" id="calib-guardstr" min="0" max="1" step="0.05" value="1">
+            <span id="calib-guardstr-label">100%</span>
+          </label>
+          <div class="rec-btn-row">
+            <button id="btn-calib-reset" class="btn">Reset calibration</button>
+            <button id="btn-screenshot" class="btn">📷 Screenshot</button>
+          </div>
+        </div>
       </div>
       <div id="quality-panel" class="quality-panel hidden">
         <h3 class="quality-title">Quality Check</h3>

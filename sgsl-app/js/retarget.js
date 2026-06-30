@@ -4,7 +4,7 @@
 
    Diverges from the demo where necessary for laptop-webcam signing:
    - Arms are gated per-side with 5-frame hysteresis so MediaPipe
-     hand-detection flicker doesn't collapse Mei to rest.
+     hand-detection flicker doesn't collapse Fumi to rest.
    - Upper-arm rotation is computed DIRECTLY from the 2D
      shoulder→wrist vector when the hand is detected. Kalidokit's
      pose solver under-shoots arm height when the elbow is off-frame
@@ -38,6 +38,86 @@ const WRIST_VIS_THRESH = 0.5;
 // rest. 5 frames at ~30 fps = ~160 ms grace window.
 const ARM_HYSTERESIS_FRAMES = 5;
 
+// ── Hands-first arm IK tuning ───────────────────────────────────
+// Map the tracked wrist's screen position (normalized 0..1) to a world
+// target on a plane in front of the chest, sized by the avatar's own
+// shoulder width, then 2-bone-IK the arm to reach it. The avatar's real
+// shoulder anchors the solve, so no monocular arm-depth guessing is done.
+// MIRROR_X / FRONT_Z signs are pinned by tools/ik_harness.mjs.
+//
+// Primary mapping is BODY-RELATIVE: the wrist is measured relative to the
+// user's own shoulders (in shoulder-width units), so it's invariant to how
+// the user is framed/zoomed. This is what makes a hand raised above the
+// shoulders read as "raised" even when the shoulders sit low in the frame.
+const MIRROR_X = 1;          // anatomical copy (no left-right mirror); was -1 for the mirror config
+const FRONT_Z = 1;           // +1 = signing plane sits toward the camera
+const REACH_GAIN = 1.15;     // user shoulder-widths → avatar shoulder-widths
+const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
+// Absolute fallback (only when the user's shoulders/nose aren't detected):
+const BOX_W = 2.4;           // signing-box width  in shoulder-widths
+const BOX_H = 3.0;           // signing-box height in shoulder-widths
+const ARM_IK_LERP = 0.45;    // per-frame slerp toward the IK solution
+const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// ── 3D hand driving (MediaPipe Tasks HandLandmarker world landmarks) ──
+// Map MP world-landmark axes → avatar-world axes. The same mapping drives both
+// palm orientation and per-finger aim. Signs pinned by the harness + live test:
+// x mirrored (reflection), y up (MP y is down), z toward the camera.
+const HAND_WX = -1, HAND_WY = -1, HAND_WZ = -1;
+// The axis map is a reflection (det = product of signs); a cross product (the
+// palm normal) flips sign under reflection, so correct it back to match the
+// rest palm axis (computed in un-reflected avatar space).
+const HAND_DET = HAND_WX * HAND_WY * HAND_WZ;
+const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
+// Wrist: the 2D arm-IK pins the forearm onto a fixed forward plane (BOX_DEPTH), so it
+// disagrees with the reliable 3D hand and the wrist pinches at the seam. Instead of
+// bending the HAND toward that bad forearm (the old WRIST_STRAIGHTEN, which corrupted the
+// trusted hand orientation), re-aim the FOREARM to follow the real hand — fingerDir is a
+// better forearm-depth estimate than the plane guess — so the wrist stays straight while
+// the hand keeps its true orientation. STRAIGHT_GAIN: 1 = forearm fully follows the hand;
+// <1 leaves a slight natural bend. WRIST_SWING_CAP bounds the swing from the IK dir
+// (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
+const STRAIGHT_GAIN = 1.0;
+const WRIST_SWING_CAP = 80 * Math.PI / 180;
+// Manual palm-rotation calibration. The hand is rolled about the forearm (fingerDir)
+// axis by a USER-SET angle (default 180°). 180° == negating palmNormal: it flips both the
+// palm-normal (Z) and across (X) of the hand basis — a true 180° wrist roll (NOT a mirror),
+// so the fingers/thumb follow consistently. Other angles let the user dial the palm facing
+// in by eye to correct the imperfect monocular orientation (setOrientationCalibration).
+// Applied to palmNormal BEFORE qHandWorld so the forearm follows and the wrist stays straight.
+const DEFAULT_ROLL_DEG = 180;
+// Fingers + thumb are driven by DIRECT HAND-LOCAL AIM (see _driveHand): each bone
+// is aimed along its real landmark segment, re-expressed in the avatar's hand
+// frame, so curl, splay and thumb opposition reproduce exactly — no per-joint flex
+// axis and no tuning gains. (The old per-joint FLEXION-ANGLE model curled the thumb
+// about cross(thumbDir, palmNormal), which lifts it OUT of the palm plane instead
+// of folding it across the palm, so the thumb juts out; direct aim fixes that.)
+// Per-finger landmark chains [wrist, mcp, pip, dip, tip]. (Digit names use the
+// shared FINGER_NAMES list declared at the top of the module — do NOT redeclare
+// it here: a second `const FINGER_NAMES` is a duplicate-declaration SyntaxError
+// that breaks the whole module, and `node --check` does NOT catch it.)
+const FINGER_SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,12], Ring: [0,13,14,15,16], Little: [0,17,18,19,20] };
+// Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
+// z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
+// the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
+// force the palm normal's facing to match it. WIND_SIGN pinned by REAL captures
+// via tools/hand_replay.mjs. BOTH sides want -1: handdump_6–9 (339 non-edge-on
+// frames, the user's RIGHT hand = retarget side "Left") agree with the raw palm
+// geometry 0% at +1 and ~100% at -1 — at +1 the override fired 82–99% of frames,
+// forcing the palm ~180° off (the reported left-wrist twist). Side "Right" was
+// already pinned to -1 by handdump_4/5. The earlier +1 for "Left" was assumed
+// good but never validated until these right-hand dumps arrived.
+const WIND_SIGN = { Left: -1, Right: -1 };
+const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
+
+// Deformation guard — anatomical clamps so the VRM hand can't skin into a collapsed/twisted
+// pose when the orientation or curl is pushed to extremes (edge-on palm, hard fist, high gains).
+// Limits are generous: inactive on normal poses, so the default render is unchanged. A cap also
+// dodges the _aimBone antipodal singularity (target ≈ −rest → unstable 180° flip) on tight fists.
+const FINGER_MAX = [100, 120, 100].map(d => d * Math.PI / 180); // Proximal, Intermediate, Distal
+const THUMB_MAX  = [75, 85, 85].map(d => d * Math.PI / 180);
+const WRIST_MAX  = 65 * Math.PI / 180;   // hand-vs-forearm deviation from its rest relationship
+
 let oldLookTarget = new THREE.Euler();
 
 export class SMPLXRetarget {
@@ -49,11 +129,108 @@ export class SMPLXRetarget {
     // Hysteresis counters per arm. Treated as "arm is on" whenever > 0.
     this._rightArmStreak = 0;
     this._leftArmStreak = 0;
+    // Per-hand diagnostic (palm facing + curl), set by _driveHand.
+    this._handDbg = { Right: null, Left: null };
+    // Last stable palm-facing sign per hand (for the edge-on temporal hold).
+    this._handFacing = { Right: 0, Left: 0 };
+    // Optional per-signer finger calibration {Left|Right: {finger:[{rest,max}×3]}}.
+    this._handCalib = null;
+    // Body calibration baseline from "Calibrate (arms at sides)" — a STABLE reach
+    // anchor (shoulder midpoint + width) so the mapping doesn't drift with the live
+    // pose when an arm raises. Set via setCalibration(); null = use the live anchor.
+    this._calib = null;
+    // Per-hand calibration (Right/Left) — chirality means the left hand needs its own (often
+    // mirrored) orientation. Each side stores a full set; _activate(side) loads one into the
+    // working this._* scratch fields just before that side is driven (so _driveHand/_solveArmIK
+    // stay unchanged). Seeded identical; the left is tuned via the Record-panel Left⇄Right selector.
+    this._sideCal = { Right: this._defaultCalib(), Left: this._defaultCalib() };
+    this._activate('Right');
+  }
+
+  /** A fresh per-side calibration set (the shipped baseline). smoothing 0 = crisp playback;
+   *  the recorder applies the live smoothing per side via setHandTuning. */
+  _defaultCalib() {
+    return {
+      orientCalib: { rollDeg: -170, pitchDeg: 10, yawDeg: 25 },
+      curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25, thumbCurl: 0.70, thumbSpread: 0.80,
+      reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
+      guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
+    };
+  }
+
+  /** Load a side's calibration into the active this._* scratch fields read by _driveHand /
+   *  _solveArmIK. Called per-side each frame (in applyFromMediaPipe) before that side is driven. */
+  _activate(side) {
+    const c = this._sideCal[side]; if (!c) return;
+    this._orientCalib = c.orientCalib;
+    this._curlGain = c.curlGain; this._spreadGain = c.spreadGain; this._thumbDeg = c.thumbDeg;
+    this._thumbCurl = c.thumbCurl; this._thumbSpread = c.thumbSpread;
+    this._reachDepth = c.reachDepth; this._reachGain = c.reachGain;
+    this._wristFlip = c.wristFlip; this._deformGuard = c.deformGuard; this._guardStrictness = c.guardStrictness;
+    this._smoothing = c.smoothing; this._handLerp = c.handLerp; this._armLerp = c.armLerp;
+  }
+
+  /** Per-hand tuning. `side` = 'Right'|'Left'; `c` = flat {rollDeg,…,smoothing} (any subset). */
+  setHandTuning(side, c) {
+    const cal = this._sideCal[side]; if (!cal || !c) return;
+    const num = (v) => typeof v === 'number' && isFinite(v);
+    for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) if (num(c[k])) cal.orientCalib[k] = c[k];
+    for (const k of ['curlGain', 'spreadGain', 'thumbDeg', 'thumbCurl', 'thumbSpread', 'reachDepth', 'reachGain', 'guardStrictness']) if (num(c[k])) cal[k] = c[k];
+    if (typeof c.wristFlip === 'boolean') cal.wristFlip = c.wristFlip;
+    if (typeof c.deformGuard === 'boolean') cal.deformGuard = c.deformGuard;
+    if (num(c.smoothing)) { cal.smoothing = clampNum(c.smoothing, 0, 1); const k = 1 - 0.8 * cal.smoothing; cal.handLerp = HAND_LERP * k; cal.armLerp = ARM_IK_LERP * k; }
+  }
+
+  /** Per-hand orientation metrics + PER-SIDE calibration, for HUD / dumps / screenshots. */
+  getMetrics() {
+    const cm = (c) => ({
+      rollDeg: c.orientCalib.rollDeg, pitchDeg: c.orientCalib.pitchDeg, yawDeg: c.orientCalib.yawDeg,
+      curlGain: c.curlGain, spreadGain: c.spreadGain, thumbDeg: c.thumbDeg,
+      thumbCurl: c.thumbCurl, thumbSpread: c.thumbSpread, reachDepth: c.reachDepth, reachGain: c.reachGain,
+      wristFlip: c.wristFlip, deformGuard: c.deformGuard, guardStrictness: c.guardStrictness, smoothing: c.smoothing,
+    });
+    return {
+      Right: this._handDbg.Right, Left: this._handDbg.Left,
+      calibration: { Right: cm(this._sideCal.Right), Left: cm(this._sideCal.Left) },
+    };
   }
   reset() {
     oldLookTarget = new THREE.Euler();
     this._rightArmStreak = 0;
     this._leftArmStreak = 0;
+  }
+
+  /** Per-signer finger calibration (open→fist range), or null to use defaults.
+   *  Keyed by retarget side ('Left'/'Right'); see recorder.js hand calibration. */
+  setHandCalibration(calib) { this._handCalib = calib || null; }
+
+  /** Per-finger joint angles (rad) [proximal, intermediate, distal] from a hand's
+   *  21 world landmarks. Shared by the live curl and the calibration capture. */
+  _fingerJointAngles(world) {
+    const P = (i) => new THREE.Vector3(world[i].x, world[i].y, world[i].z);
+    const ja = (a, b, c) => {
+      const u = P(b).sub(P(a)), v = P(c).sub(P(b));
+      if (u.lengthSq() < 1e-12 || v.lengthSq() < 1e-12) return 0;
+      return Math.acos(clampNum(u.normalize().dot(v.normalize()), -1, 1));
+    };
+    const out = {};
+    for (const f of FINGER_NAMES) {
+      const k = FINGER_SEG[f];
+      out[f] = [ja(k[0], k[1], k[2]), ja(k[1], k[2], k[3]), ja(k[2], k[3], k[4])];
+    }
+    return out;
+  }
+
+  /** Measure finger angles for whichever hands are present, routed to the same
+   *  retarget sides _driveHand uses. Returns {Left, Right} (null where absent). */
+  fingerAnglesFromResults(results) {
+    const map = { Right: results.leftHandWorldLandmarks, Left: results.rightHandWorldLandmarks };
+    const out = { Left: null, Right: null };
+    for (const side of ['Left', 'Right']) {
+      const w = map[side];
+      if (w && w.length >= 21) out[side] = this._fingerJointAngles(w);
+    }
+    return out;
   }
 
   /** Caller wires up a video element (recorder) or null (viewer). */
@@ -148,44 +325,330 @@ export class SMPLXRetarget {
   }
 
   /**
-   * Compute upper-arm Euler directly from MediaPipe 2D shoulder→wrist.
-   * This sidesteps Kalidokit's pose solver, which under-shoots arm
-   * height when the elbow is extrapolated (laptop crop case).
-   *
-   * We return an object compatible with _rigRotation:
-   *  { x, y, z, rotationOrder }.
-   *
-   * `side` is "Right" or "Left" from the SIGNER'S perspective.
-   * `shoulder`, `wrist` are MediaPipe 2D landmarks (x,y in [0..1]).
+   * Aim a bone so that the local direction toward its child (`restAxisLocal`,
+   * the fixed bind offset, measured once in avatar.js) points along a desired
+   * WORLD direction. We solve for the bone's LOCAL quaternion:
+   *   worldChildDir = parentWorldQ · boneQ · restAxisLocal
+   * so   boneQ = setFromUnitVectors(restAxisLocal, parentWorldQ⁻¹ · worldDir).
+   * The minimal-rotation result ignores roll about the bone axis (wrist roll
+   * comes from the hand solve), which is exactly what we want for placement.
    */
-  _directUpperArm(side, shoulder, wrist) {
-    if (!shoulder || !wrist) return null;
-    // MediaPipe 2D convention: +x right, +y down.
-    // Rest upper-arm in the VRM hangs straight down (shoulder→wrist
-    // vector pointing +y in the image).
-    const dx = wrist.x - shoulder.x;
-    const dy = wrist.y - shoulder.y;
+  _aimBone(bone, restAxisLocal, worldDir, lerpAmount = ARM_IK_LERP, maxAngle = Math.PI) {
+    if (!bone || !bone.parent) return;
+    if (worldDir.lengthSq() < 1e-9) return;
+    const pq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+    const localDir = worldDir.clone().applyQuaternion(pq.invert());
+    if (localDir.lengthSq() < 1e-9) return;
+    localDir.normalize();
+    let q = new THREE.Quaternion().setFromUnitVectors(restAxisLocal, localDir);
+    if (maxAngle < Math.PI) {   // clamp the swing from rest to an anatomical max (deformation guard)
+      const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+      if (ang > maxAngle) q = new THREE.Quaternion().slerp(q, maxAngle / ang);
+    }
+    bone.quaternion.slerp(q, lerpAmount);
+  }
 
-    // Angle from straight-down, measured CCW when viewed from the
-    // front. atan2(dx, dy): 0 = straight down, +π/2 = arm out to
-    // the signer's right (camera's left side of frame).
-    const angle = Math.atan2(dx, dy);
+  /** Orthonormal-basis quaternion: Y = finger axis, Z = palm normal, X = Y×Z. */
+  _basisQuat(fingerAxis, palmAxis) {
+    const Y = fingerAxis.clone().normalize();
+    const X = new THREE.Vector3().crossVectors(Y, palmAxis).normalize();
+    const Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+    const m = new THREE.Matrix4().makeBasis(X, Y, Z);
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  }
 
-    // For a VRM facing the camera (rotated Math.PI in the scene):
-    //   RightUpperArm.rotation.z > 0 raises the right arm
-    //   LeftUpperArm.rotation.z  < 0 raises the left arm
-    // The sign flip takes care of the mirror.
-    const sign = (side === "Right") ? 1 : -1;
-    const zRot = sign * angle;
+  /** Orient the Hand bone so its rest (finger,palm) basis maps to the desired
+   *  WORLD (finger,palm) basis — i.e. palm faces where the real palm faces. */
+  _orientHand(bone, restFinger, restPalm, worldFinger, worldPalm, lerp = HAND_LERP) {
+    if (!bone || !bone.parent) return;
+    if (worldFinger.lengthSq() < 1e-9 || worldPalm.lengthSq() < 1e-9) return;
+    const inv = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const tFinger = worldFinger.clone().applyQuaternion(inv);
+    const tPalm = worldPalm.clone().applyQuaternion(inv);
+    const qRest = this._basisQuat(restFinger, restPalm);
+    const qTarget = this._basisQuat(tFinger, tPalm);
+    const local = qTarget.multiply(qRest.invert());
+    bone.quaternion.slerp(local, lerp);
+  }
 
-    // Pitch (x rotation) — use the horizontal distance from shoulder
-    // to wrist as a very rough proxy for "how forward" the hand is.
-    // Sign language is mostly frontal, so keep this small and let
-    // Kalidokit's lower-arm handle forward reach.
-    const horizontalReach = Math.abs(dx);
-    const xRot = -0.2 * clamp(horizontalReach - 0.15, 0, 1);
+  /**
+   * Drive a hand from MediaPipe HandLandmarker 3D WORLD landmarks (21 pts,
+   * metric). Palm facing comes from the finger-direction + palm-normal basis;
+   * each finger bone is aimed along its world-landmark segment, so curl + splay
+   * reproduce at full magnitude. `world` is an array of {x,y,z} (MP-world).
+   */
+  _driveHand(vrm, side, world) {
+    const rig = this._avatar?.handRig?.[side];
+    if (!rig || !world || world.length < 21) return;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const hand = vrm.humanoid.getBoneNode(BN[`${side}Hand`]);
+    if (!hand) return;
+    // Wrist-rotation toggle: the hand mapping is a reflection (HAND_W det = -1), which reverses
+    // the SENSE of wrist twist (user CCW → avatar CW). `_wristFlip` flips the x-axis of the
+    // mapping, mirroring the hand so the twist follows the other way (also swaps thumb side —
+    // they're coupled). det is recomputed so the palm-normal + finger across stay consistent.
+    const wx = this._wristFlip ? -HAND_WX : HAND_WX;
+    const det = wx * HAND_WY * HAND_WZ;
+    const V = (i) => new THREE.Vector3(world[i].x * wx, world[i].y * HAND_WY, world[i].z * HAND_WZ);
 
-    return { x: xRot, y: 0, z: zRot, rotationOrder: "XYZ" };
+    // Hand orientation (palm facing). Compute fingerDir + palmNormal FIRST so the forearm
+    // can be oriented palm-aware (matching the hand's roll → no wrist twist).
+    const wrist = V(0);
+    const fingerDir = V(9).sub(wrist).normalize();
+    // Same formula as avatar.js handRig.palmAxis (finger × (little-MCP − index-MCP)),
+    // with the reflection-determinant correction so it matches the rest basis.
+    const palmNormal = new THREE.Vector3()
+      .crossVectors(fingerDir, V(17).sub(V(5))).multiplyScalar(det).normalize();
+
+    // Stabilise palm-vs-back against MediaPipe's depth flip using the 2D knuckle
+    // winding (world x/y don't flip with depth). Normalised so |wind| ∈ [0,1].
+    const a = V(5).sub(V(0)), b = V(17).sub(V(0));
+    const windRaw = a.x * b.y - a.y * b.x;
+    const wind = windRaw / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) + 1e-9);
+    // Only correct the palm-vs-back SIGN when the winding is CONFIDENT (|wind|>thresh).
+    // In the edge-on dead zone the raw 3D normal is reliable (and small in z anyway), so
+    // applying a STALE held sign there pins the palm to the wrong side as it rotates past
+    // edge-on — the "B palm faces the wrong way" bug. Verified on handdump_14 via
+    // tools/palm_facing_probe.mjs: 21 dead-zone frames where the old persistent hold
+    // negated a CORRECT raw normal (and 0 confident frames change), so trust the geometry
+    // there. The winding override still protects against MP-z flips when it's confident.
+    if (Math.abs(wind) > WIND_THRESH) {
+      this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
+      if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
+    }
+    // Manual 3-DOF orientation calibration on the measured hand basis (X=across, Y=finger,
+    // Z=palm normal): roll about Y, pitch about X (tilt forward/back), yaw about Z. Applied
+    // here (before qHandWorld) so the forearm + finger frame follow. Default {180,0,0} is a
+    // π rotation about Y → fingerDir unchanged, palmNormal flipped = exactly the old negate.
+    const oc = this._orientCalib;
+    if (oc.rollDeg || oc.pitchDeg || oc.yawDeg) {
+      const D = Math.PI / 180;
+      const qC = this._basisQuat(fingerDir, palmNormal).multiply(
+        new THREE.Quaternion().setFromEuler(
+          new THREE.Euler((oc.pitchDeg || 0) * D, (oc.rollDeg || 0) * D, (oc.yawDeg || 0) * D, 'YXZ')));
+      fingerDir.set(0, 1, 0).applyQuaternion(qC).normalize();
+      palmNormal.set(0, 0, 1).applyQuaternion(qC).normalize();
+    }
+
+    // Desired hand WORLD orientation (parent-independent): basisQuat(fingerDir,palmNormal)·qRest⁻¹.
+    const qRestHand = this._basisQuat(rig.fingerAxis, rig.palmAxis);
+    const qHandWorld = this._basisQuat(fingerDir, palmNormal).multiply(qRestHand.clone().invert());
+
+    // Orient the FOREARM so the Hand sits at its BIND relationship — fixes BOTH the wrist
+    // bend AND the TWIST: lowerArm_world = qHandWorld · handBindLocal⁻¹ ⇒ hand_local ≈ bind.
+    // (Old code aimed the forearm roll-free, matching only fingerDir, so the hand barrel-
+    // rolled ~120° about the forearm — measured on dump_12. Verified with hand_fk_preview.)
+    const lowerArm = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    const armRig = this._avatar?.armRig?.[side];
+    let wristBend = 0;
+    if (lowerArm && lowerArm.parent && armRig && armRig.handBindLocal) {
+      const qLowerWorld = qHandWorld.clone().multiply(armRig.handBindLocal.clone().invert());
+      const pInv = lowerArm.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), this._armLerp);
+      lowerArm.updateWorldMatrix(true, true); // refresh the Hand (child) world transform too
+      const res = hand.getWorldPosition(new THREE.Vector3())
+        .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
+      if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI;
+    }
+
+    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal, this._handLerp);
+    hand.updateWorldMatrix(true, true);
+
+    // Wrist deformation guard: cap the hand's rotation away from its rest relationship to the
+    // forearm (hand.quaternion is hand-local relative to LowerArm = same frame as handBindLocal),
+    // so the VRM hand can't skin into a collapsed/twisted pose. Only fires when the forearm hasn't
+    // absorbed the twist (the deformation case); normal signs stay under the cap.
+    if (this._deformGuard && armRig?.handBindLocal) {
+      const wristMax = WRIST_MAX + (Math.PI - WRIST_MAX) * (1 - this._guardStrictness); // guard strength
+      const dev = armRig.handBindLocal.clone().invert().multiply(hand.quaternion);
+      const ang = 2 * Math.acos(Math.min(1, Math.abs(dev.w)));
+      if (ang > wristMax) {
+        hand.quaternion.copy(armRig.handBindLocal).multiply(new THREE.Quaternion().slerp(dev, wristMax / ang));
+        hand.updateWorldMatrix(true, true);
+      }
+    }
+
+    // Fingers + thumb: DIRECT HAND-LOCAL AIM. Aim each bone so it points along its
+    // real landmark segment, re-expressed through the avatar hand's frame — so curl,
+    // splay and (critically) thumb opposition reproduce exactly, with no per-joint
+    // flex axis and no tuning gain. The segment dirs are taken relative to the same
+    // (finger, palm) basis the hand was just oriented to, so the digits follow the
+    // straightened/oriented wrist.
+    const segNames = ['Proximal', 'Intermediate', 'Distal'];
+    // Measured hand basis (same _basisQuat convention as the avatar rest basis:
+    // Y = finger axis, X = Y×palm, Z = X×Y). fingerDir/palmNormal are the vectors
+    // _orientHand aligned the hand to (already mapped into avatar space by V()).
+    const Ym = fingerDir.clone().normalize();
+    const Xm = new THREE.Vector3().crossVectors(Ym, palmNormal).normalize();
+    const Zm = new THREE.Vector3().crossVectors(Xm, Ym).normalize();
+    // Avatar hand rest basis carried into WORLD by the Hand bone's orientation.
+    const Qh = hand.getWorldQuaternion(new THREE.Quaternion());
+    const Yr = rig.fingerAxis.clone().normalize();
+    const Xr = new THREE.Vector3().crossVectors(Yr, rig.palmAxis).normalize();
+    const Zr = new THREE.Vector3().crossVectors(Xr, Yr).normalize();
+    const Xa = Xr.applyQuaternion(Qh), Ya = Yr.applyQuaternion(Qh), Za = Zr.applyQuaternion(Qh);
+    // Re-express a mapped-world segment dir into the avatar hand frame (a digit bent
+    // θ off the palm in the real hand bends θ off the avatar palm — same intrinsics).
+    // The ACROSS (X) component carries the chirality flip from the V() point-inversion
+    // (HAND_W = -1,-1,-1, det = HAND_DET): palmNormal is sign-corrected by HAND_DET but
+    // the across axis is not, so without this factor splay inverts (spread↔together) and
+    // the thumb folds the wrong way. Verified visually with tools/hand_fk_preview.mjs.
+    // User shaping: spread scales the across (splay) term, curl the palm-normal (bend) term.
+    // The THUMB has its OWN gains (decoupled) so finger tuning doesn't drag it.
+    const toHand = (d, sg, cg) => new THREE.Vector3()
+      .addScaledVector(Xa, det * d.dot(Xm) * sg)
+      .addScaledVector(Ya, d.dot(Ym))
+      .addScaledVector(Za, d.dot(Zm) * cg);
+    const thumbRad = this._thumbDeg * Math.PI / 180; // thumb abduction about the palm normal (Za)
+    // Guard strength scales the clamp limits: 1 = base (tight), 0 = effectively off (→ π).
+    const loosen = (base) => base + (Math.PI - base) * (1 - this._guardStrictness);
+    for (const f of FINGER_NAMES) {
+      const arr = rig.fingers[f];
+      if (!arr) continue;
+      const k = FINGER_SEG[f]; // [wrist, mcp, pip, dip, tip]
+      const isThumb = f === 'Thumb';
+      const sg = isThumb ? this._thumbSpread : this._spreadGain;
+      const cg = isThumb ? this._thumbCurl : this._curlGain;
+      const swing = (isThumb && thumbRad) ? thumbRad : 0;
+      for (let i = 0; i < 3; i++) {
+        const fr = arr[i];
+        if (!fr) continue;
+        const bone = vrm.humanoid.getBoneNode(BN[`${side}${f}${segNames[i]}`]);
+        if (!bone) continue;
+        const d = V(k[i + 2]).sub(V(k[i + 1])); // real segment: parent→child landmark
+        if (d.lengthSq() < 1e-12) continue;
+        const dir = toHand(d.normalize(), sg, cg);
+        if (swing) dir.applyAxisAngle(Za, swing); // swing the thumb across the palm plane
+        const maxA = this._deformGuard ? loosen((isThumb ? THUMB_MAX : FINGER_MAX)[i]) : Math.PI;
+        this._aimBone(bone, fr.fwdLocal, dir, this._handLerp, maxA);
+        bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
+      }
+    }
+
+    // Diagnostic: palm facing (+1 = toward camera) + mean finger / thumb curl (deg).
+    const angDeg = this._fingerJointAngles(world);
+    const meanDeg = (names) => {
+      let s = 0, n = 0;
+      for (const nm of names) for (const a of angDeg[nm]) { s += a; n++; }
+      return n ? (s / n) * 180 / Math.PI : 0;
+    };
+    // Wrist TWIST: how much the hand is rolled about the forearm axis relative to the
+    // LowerArm (swing-twist decomposition). At bend≈0 this is the remaining "knot".
+    let roll = 0;
+    if (lowerArm && armRig) {
+      const qL = lowerArm.getWorldQuaternion(new THREE.Quaternion()).invert()
+        .multiply(hand.getWorldQuaternion(new THREE.Quaternion()));
+      const ax = armRig.lowerRestAxis; // forearm (twist) axis in LowerArm-local frame
+      const d = qL.x * ax.x + qL.y * ax.y + qL.z * ax.z;
+      const tw = new THREE.Quaternion(ax.x * d, ax.y * d, ax.z * d, qL.w).normalize();
+      roll = 2 * Math.acos(Math.min(1, Math.abs(tw.w))) * 180 / Math.PI;
+      if (roll > 180) roll = 360 - roll;
+    }
+    this._handDbg[side] = {
+      facing: +palmNormal.z.toFixed(2),
+      palmN: [+palmNormal.x.toFixed(2), +palmNormal.y.toFixed(2), +palmNormal.z.toFixed(2)],
+      tiltZ: +fingerDir.z.toFixed(2),
+      curl: Math.round(meanDeg(['Index', 'Middle', 'Ring', 'Little'])),
+      thumb: Math.round(meanDeg(['Thumb'])), bend: Math.round(wristBend), roll: Math.round(roll),
+      wind: +wind.toFixed(2),
+    };
+  }
+
+  /** User body anchor (image space) for framing-invariant wrist mapping:
+   *  prefer the shoulder midpoint + shoulder width; fall back to the nose. */
+  /** Store the "Calibrate (arms at sides)" baseline so the reach anchor is STABLE
+   *  (vs. recomputing from the jittery live pose every frame). Pass null to clear. */
+  setCalibration(c) {
+    this._calib = (c && c.shoulderMid && c.shoulderWidth > 0.05)
+      ? { x: c.shoulderMid[0], y: c.shoulderMid[1], scale: c.shoulderWidth }
+      : null;
+  }
+
+  _bodyAnchor(pose2D) {
+    // Calibrated anchor wins: a fixed shoulder midpoint + width captured at rest, so the
+    // reach reference doesn't drift when the live pose shifts (raised arm, jitter).
+    if (this._calib) return this._calib;
+    const L = pose2D?.[11], R = pose2D?.[12];
+    if (L && R && (L.visibility ?? 1) > 0.3 && (R.visibility ?? 1) > 0.3) {
+      return {
+        x: (L.x + R.x) / 2,
+        y: (L.y + R.y) / 2,
+        scale: Math.hypot(L.x - R.x, L.y - R.y) || 0.2,
+      };
+    }
+    const nose = pose2D?.[0];
+    if (nose) return { x: nose.x, y: nose.y + 0.18, scale: 0.22 };
+    return null;
+  }
+
+  /**
+   * Hands-first 2-bone IK: reach `side`'s hand to the tracked wrist's screen
+   * position. Uses ONLY reliable signals — the 2D wrist (x,y in [0..1]) and
+   * the avatar's own shoulder world position — never a guessed arm depth.
+   * `screen` is any landmark with {x,y}: the hand's wrist, or a pose wrist.
+   */
+  _solveArmIK(vrm, side, screen, anchor, skipForearm = false) {
+    const rig = this._avatar?.armRig?.[side];
+    if (!rig || !screen) return false;
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const ua = vrm.humanoid.getBoneNode(BN[`${side}UpperArm`]);
+    const la = vrm.humanoid.getBoneNode(BN[`${side}LowerArm`]);
+    if (!ua || !la) return false;
+
+    // Avatar shoulder anchors + width from its current pose.
+    const Rs = vrm.humanoid.getBoneNode(BN.RightUpperArm).getWorldPosition(new THREE.Vector3());
+    const Ls = vrm.humanoid.getBoneNode(BN.LeftUpperArm).getWorldPosition(new THREE.Vector3());
+    const mid = Rs.clone().add(Ls).multiplyScalar(0.5);
+    const avShoulderW = Rs.distanceTo(Ls) || 0.25;
+
+    let T;
+    if (anchor) {
+      // BODY-RELATIVE: wrist position relative to the user's shoulders, in
+      // shoulder-width units → same offset (scaled) from the avatar's
+      // shoulders. Framing-invariant. Image y is down, so invert for world up.
+      const relX = (screen.x - anchor.x) / anchor.scale;
+      const relY = (screen.y - anchor.y) / anchor.scale;
+      T = new THREE.Vector3(
+        mid.x + relX * avShoulderW * this._reachGain * MIRROR_X,
+        mid.y - relY * avShoulderW * this._reachGain,
+        mid.z + avShoulderW * this._reachDepth * FRONT_Z,
+      );
+    } else {
+      // Absolute fallback (no shoulders/nose): image-centered box.
+      T = new THREE.Vector3(
+        mid.x + (0.5 - screen.x) * avShoulderW * BOX_W * -MIRROR_X,
+        mid.y + (0.5 - screen.y) * avShoulderW * BOX_H,
+        mid.z + avShoulderW * this._reachDepth * FRONT_Z,
+      );
+    }
+
+    const S = (side === "Right" ? Rs : Ls).clone();
+    const { L1, L2, upperRestAxis, lowerRestAxis } = rig;
+
+    // Planar 2-bone IK (law of cosines).
+    const toT = T.clone().sub(S);
+    const d = clampNum(toT.length(), Math.abs(L1 - L2) + 1e-3, L1 + L2 - 1e-3);
+    const axis = toT.lengthSq() > 1e-9 ? toT.clone().normalize() : new THREE.Vector3(0, -1, 0);
+    const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    // Pole hint: elbow bends down, toward the camera, and outward per side.
+    const outX = (side === "Right" ? Rs.x : Ls.x) - mid.x;
+    const pole = new THREE.Vector3(Math.sign(outX || (side === "Right" ? 1 : -1)) * 0.3, -1, 0.4 * FRONT_Z);
+    let perp = pole.sub(axis.clone().multiplyScalar(pole.dot(axis)));
+    if (perp.lengthSq() < 1e-9) perp = new THREE.Vector3(0, -1, 0);
+    perp.normalize();
+    const E = S.clone().add(axis.clone().multiplyScalar(a)).add(perp.multiplyScalar(h));
+
+    // Aim upper arm S→E (places the elbow). When a 3D hand drives this side,
+    // _driveHand owns the forearm (re-aims it to follow the hand); aiming it at T
+    // here too would make the two slerps fight and leave the wrist knotted, so skip it.
+    this._aimBone(ua, upperRestAxis, E.clone().sub(S), this._armLerp);
+    ua.updateWorldMatrix(true, true);
+    if (!skipForearm) {
+      const Ew = la.getWorldPosition(new THREE.Vector3());
+      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew), this._armLerp); // forearm fallback when no 3D hand
+    }
+    return true;
   }
 
   applyFromMediaPipe(vrm, results) {
@@ -195,25 +658,20 @@ export class SMPLXRetarget {
     const faceLandmarks = results.faceLandmarks;
     const pose3DLandmarks = results.za || results.ea;
     const pose2DLandmarks = results.poseLandmarks;
-    // MediaPipe reports hands as the camera sees them; Kalidokit's
-    // demo swaps so "Left" refers to the signer's own left hand.
-    const leftHandLandmarks = results.rightHandLandmarks;
-    const rightHandLandmarks = results.leftHandLandmarks;
+    // ANATOMICAL COPY (user chose "copy me, same actual hand"): the signer's OWN hand
+    // drives the SAME-SIDE avatar hand — no mirror — so the thumb/handedness match.
+    // Proven by chirality check: signer-right (+1) → avatar Right rig (+1); the old swap
+    // sent it to the Left rig (−1) = the mirror. (tools/hand_fk_preview.mjs)
+    const leftHandLandmarks = results.leftHandLandmarks;
+    const rightHandLandmarks = results.rightHandLandmarks;
+    const leftHandWorld = results.leftHandWorldLandmarks;
+    const rightHandWorld = results.rightHandWorldLandmarks;
 
     const solveOpts = this._video
       ? { runtime: "mediapipe", video: this._video }
       : { runtime: "mediapipe" };
 
     this._dc++;
-    if (this._dc % 30 === 0) {
-      this._lastDebug = `Frame: ${this._dc}`
-        + `\npose3D: ${pose3DLandmarks ? pose3DLandmarks.length + ' lm' : 'NULL'}`
-        + `\npose2D: ${pose2DLandmarks ? pose2DLandmarks.length + ' lm' : 'NULL'}`
-        + `\nface: ${faceLandmarks ? faceLandmarks.length + ' lm' : 'NULL'}`
-        + `\nrightHand(MP): ${rightHandLandmarks ? 'yes' : 'no'}`
-        + `\nleftHand(MP): ${leftHandLandmarks ? 'yes' : 'no'}`
-        + `\narmStreak: R=${this._rightArmStreak} L=${this._leftArmStreak}`;
-    }
 
     if (faceLandmarks && faceLandmarks.length >= 468) {
       riggedFace = Kalidokit.Face.solve(faceLandmarks, solveOpts);
@@ -224,15 +682,14 @@ export class SMPLXRetarget {
       ? this._countVisible(pose2DLandmarks) >= POSE_MIN_VISIBLE_LMS
       : false;
 
-    // Raw per-frame "arm is trustworthy" signal. Hand detection is
-    // the strong signal; wrist visibility is a fallback for the
-    // no-hand-raised case.
-    const vis = (i) => pose2DLandmarks?.[i]?.visibility ?? 0;
+    // Raw per-frame "arm is trustworthy" signal. An arm activates ONLY when its
+    // hand is actually detected (image or 3D world landmarks) — a bare pose
+    // wrist must not raise the non-signing arm. Hysteresis (below) still
+    // sustains an on-arm through brief hand dropouts.
     const handDetected = (lms) =>
       lms && this._countVisible(lms, 0) >= HAND_MIN_VISIBLE_LMS;
-    // MediaPipe pose wrist indices: 15 = signer's right, 16 = signer's left.
-    const rawRightOk = handDetected(rightHandLandmarks) || vis(15) >= WRIST_VIS_THRESH;
-    const rawLeftOk  = handDetected(leftHandLandmarks)  || vis(16) >= WRIST_VIS_THRESH;
+    const rawRightOk = handDetected(rightHandLandmarks) || (rightHandWorld?.length >= 21);
+    const rawLeftOk  = handDetected(leftHandLandmarks)  || (leftHandWorld?.length >= 21);
 
     // Hysteresis: fill the streak up to MAX when the raw signal is
     // good; decrement when it's bad. Arm is "on" whenever > 0.
@@ -244,70 +701,87 @@ export class SMPLXRetarget {
     const signerRightArmOn = this._rightArmStreak > 0;
     const signerLeftArmOn  = this._leftArmStreak  > 0;
 
+    // Torso (optional, lightly damped) — only when a full pose is present.
+    // The avatar otherwise stays planted; arms below do NOT depend on this.
     if (poseVisible && pose3DLandmarks) {
       riggedPose = Kalidokit.Pose.solve(pose3DLandmarks, pose2DLandmarks, solveOpts);
       if (riggedPose) {
-        if (this._avatar) this._avatar.markActive();
-
-        // Torso: small dampeners so MediaPipe noise doesn't tilt the
-        // avatar. Hips position transfer is intentionally disabled.
-        this._rigRotation(vrm, "Hips", riggedPose.Hips.rotation, 0.2, 0.15);
-        this._rigRotation(vrm, "Chest", riggedPose.Spine, 0.1, 0.15);
-        this._rigRotation(vrm, "Spine", riggedPose.Spine, 0.2, 0.15);
-
-        // MediaPipe 2D shoulders: 11 = signer's right, 12 = signer's left.
-        const rightShoulder = pose2DLandmarks?.[11];
-        const leftShoulder  = pose2DLandmarks?.[12];
-        // Hand wrist landmark within a hand array is index 0.
-        const rightWrist = rightHandLandmarks?.[0];
-        const leftWrist  = leftHandLandmarks?.[0];
-
-        // Right arm
-        if (signerRightArmOn) {
-          // Prefer direct 2D computation when we have hand + shoulder.
-          // It bypasses Kalidokit's elbow extrapolation, which was
-          // under-shooting arm height on laptop crops.
-          const direct = (rightWrist && rightShoulder)
-            ? this._directUpperArm("Right", rightShoulder, rightWrist)
-            : null;
-          this._rigRotation(
-            vrm, "RightUpperArm",
-            direct || riggedPose.RightUpperArm,
-            1, 0.65,
-          );
-          this._rigRotation(vrm, "RightLowerArm", riggedPose.RightLowerArm, 1, 0.65);
-        } else if (this._avatar) {
-          this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
-        }
-
-        // Left arm
-        if (signerLeftArmOn) {
-          const direct = (leftWrist && leftShoulder)
-            ? this._directUpperArm("Left", leftShoulder, leftWrist)
-            : null;
-          this._rigRotation(
-            vrm, "LeftUpperArm",
-            direct || riggedPose.LeftUpperArm,
-            1, 0.65,
-          );
-          this._rigRotation(vrm, "LeftLowerArm", riggedPose.LeftLowerArm, 1, 0.65);
-        } else if (this._avatar) {
-          this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
-        }
-        // Legs intentionally NOT driven.
+        this._rigRotation(vrm, "Hips", riggedPose.Hips.rotation, 0.15, 0.12);
+        this._rigRotation(vrm, "Chest", riggedPose.Spine, 0.08, 0.12);
+        this._rigRotation(vrm, "Spine", riggedPose.Spine, 0.12, 0.12);
       }
     }
 
-    // Hand writes: hand-solve only, no longer mix in pose-Z.
-    if (handDetected(leftHandLandmarks)) {
-      riggedLeftHand = Kalidokit.Hand.solve(leftHandLandmarks, "Left");
-      this._writeHand(vrm, "Left", riggedLeftHand);
+    // ── Hands-first arm IK ──────────────────────────────────────────
+    // Reach each hand to the tracked wrist's screen position. Prefer the
+    // hand wrist (index 0); fall back to the pose wrist (15 = signer's
+    // left, 16 = signer's right — same anatomical sides the swap assigns)
+    // so the arm still tracks for a few frames if the fingers drop out.
+    const rightTargetScreen = rightHandLandmarks?.[0] || pose2DLandmarks?.[15];
+    const leftTargetScreen  = leftHandLandmarks?.[0]  || pose2DLandmarks?.[16];
+
+    if (this._avatar &&
+        ((signerRightArmOn && rightTargetScreen) || (signerLeftArmOn && leftTargetScreen))) {
+      this._avatar.markActive();
     }
 
-    if (handDetected(rightHandLandmarks)) {
-      riggedRightHand = Kalidokit.Hand.solve(rightHandLandmarks, "Right");
-      this._writeHand(vrm, "Right", riggedRightHand);
+    // Map the wrist relative to the user's own body (framing-invariant).
+    const userAnchor = this._bodyAnchor(pose2DLandmarks);
+
+    // Bone world matrices must be current before we read the shoulders.
+    vrm.scene.updateMatrixWorld(true);
+
+    if (signerRightArmOn && rightTargetScreen) {
+      this._activate("Right");
+      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21));
+    } else if (this._avatar) {
+      this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
+
+    if (signerLeftArmOn && leftTargetScreen) {
+      this._activate("Left");
+      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21));
+    } else if (this._avatar) {
+      this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
+    }
+    // Legs intentionally NOT driven.
+
+    // Hands: prefer 3D world landmarks (HandLandmarker); fall back to Kalidokit.
+    this._handDbg.Left = null; this._handDbg.Right = null;
+    if (rightHandWorld && rightHandWorld.length >= 21) {
+      this._activate("Right"); this._driveHand(vrm, "Right", rightHandWorld); riggedRightHand = true;
+    } else if (handDetected(rightHandLandmarks)) {
+      this._writeHand(vrm, "Right", Kalidokit.Hand.solve(rightHandLandmarks, "Right"));
+      riggedRightHand = true;
+    } else if (this._avatar) {
+      this._avatar.restFingers("Right", 0.25); // no hand → fingers relax to rest
+    }
+    if (leftHandWorld && leftHandWorld.length >= 21) {
+      this._activate("Left"); this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
+    } else if (handDetected(leftHandLandmarks)) {
+      this._writeHand(vrm, "Left", Kalidokit.Hand.solve(leftHandLandmarks, "Left"));
+      riggedLeftHand = true;
+    } else if (this._avatar) {
+      this._avatar.restFingers("Left", 0.25);
+    }
+
+    // Live diagnostic (read by recorder.js → #rec-debug). Every frame, so a
+    // screenshot is current. Per AVATAR side: arm on/off + target, hand source,
+    // palm facing (+1 = palm to camera) and mean finger curl (deg).
+    const fmt = (t) => t ? `(${t.x.toFixed(2)},${t.y.toFixed(2)})` : '—';
+    const lSrc = leftHandWorld ? '3D' : (leftHandLandmarks?.[0] ? 'kdk' : 'none');
+    const rSrc = rightHandWorld ? '3D' : (rightHandLandmarks?.[0] ? 'kdk' : 'none');
+    const hd = (s) => { const d = this._handDbg[s];
+      return d ? `face:${d.facing} palmN:[${d.palmN.join(',')}] tilt:${d.tiltZ} wind:${d.wind} curl:${d.curl}° thumb:${d.thumb}° bend:${d.bend}° roll:${d.roll}°`
+               : 'face:— palmN:— tilt:— wind:— curl:— thumb:— bend:— roll:—'; };
+    const calLine = (side) => { const c = this._sideCal[side], o = c.orientCalib;
+      return `calib[${side[0]}] roll:${Math.round(o.rollDeg)}° pitch:${Math.round(o.pitchDeg)}° yaw:${Math.round(o.yawDeg)}° flip:${c.wristFlip ? 'on' : 'off'}  curl:${c.curlGain.toFixed(2)} spread:${c.spreadGain.toFixed(2)} thumb:${Math.round(c.thumbDeg)}°(c${c.thumbCurl.toFixed(2)}/s${c.thumbSpread.toFixed(2)})  depth:${c.reachDepth.toFixed(2)} ext:${c.reachGain.toFixed(2)} guard:${c.deformGuard ? 'on' : 'off'}×${c.guardStrictness.toFixed(2)} smooth:${Math.round(c.smoothing * 100)}%`; };
+    this._lastDebug =
+        calLine('Right') + `\n` + calLine('Left')
+      + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
+      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
+      + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
+      + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'} tgt:${fmt(rightTargetScreen)} | hand:${rSrc} ${hd('Right')}`;
 
     return { hasPose: !!riggedPose, hasLeft: !!riggedLeftHand, hasRight: !!riggedRightHand };
   }
