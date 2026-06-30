@@ -4,14 +4,12 @@
    Off-thread tracking experiment. The main thread ONLY:
      - grabs webcam frames -> createImageBitmap -> transfer to worker
      - on each worker result: adapt -> retarget.applyFromMediaPipe -> draw overlay
-     - renders the avatar + a compact calibration panel + HUD
+     - renders the avatar + a compact calibration panel + HUD + a SESSION RECORDER
    All landmark ML runs in track-worker.js (off-thread), so the
    render loop never starves -> targets v1's long-session slowdown.
 
    Reuses the SAME tuned modules as the live app (single source, no
-   drift): ../../../sgsl-app/js/{avatar.js,retarget.js}. Those load
-   `assets/mei.vrm` RELATIVE TO THIS PAGE -> the `assets` symlink in
-   this folder points at ../../sgsl-app/assets.
+   drift): ../../../sgsl-app/js/{avatar.js,retarget.js}.
    ============================================================ */
 
 import { SMPLXAvatar } from '../../../sgsl-app/js/avatar.js';
@@ -44,16 +42,22 @@ let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
 let tsCtr = 0;
 
-// Surface worker-load failures that would otherwise be SILENT (e.g. the module
-// worker failing to instantiate, or a bad MIME type from the static server).
-worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console for details)`, 'error');
+// Surface worker-load failures that would otherwise be SILENT.
+worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console)`, 'error');
 worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
+
+// ── Session recorder (measures FPS-over-time so the soak test is objective) ──
+const rec = {
+  on: false, start: 0, lastSample: 0,
+  rafCount: 0, resultCount: 0, lastLatency: 0,
+  handR: false, handL: false,
+  sendTimes: new Map(), samples: [],
+};
 
 worker.onmessage = (e) => {
   const msg = e.data;
   if (!msg) return;
   if (msg.type === 'status') {
-    // Show load progress so a stall is visible (which model, GPU/CPU, etc.).
     if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
     if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
     return;
@@ -69,7 +73,12 @@ worker.onmessage = (e) => {
   }
   if (msg.type === 'result') {
     inFlight = false;
+    rec.resultCount++;
+    const sent = rec.sendTimes.get(msg.ts);
+    if (sent != null) { rec.lastLatency = performance.now() - sent; rec.sendTimes.delete(msg.ts); }
     const results = toResults(msg);
+    rec.handR = !!results.rightHandWorldLandmarks;
+    rec.handL = !!results.leftHandWorldLandmarks;
     if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
     drawOverlay(results);
     if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
@@ -93,15 +102,32 @@ async function startCamera() {
 }
 
 // Frame pump: at most one outstanding bitmap in the worker (drop frames under load
-// rather than queueing — keeps latency low and avoids the backlog that makes motion
-// feel "random" once it falls behind).
+// rather than queueing). Also the rAF heartbeat for the session recorder — the rate
+// of these callbacks IS the main-thread-responsiveness signal we care about.
 async function pump() {
+  const now = performance.now();
+  rec.rafCount++;
   if (workerReady && !inFlight && video.readyState >= 2) {
     inFlight = true;
     try {
+      const ts = ++tsCtr * 33;
+      rec.sendTimes.set(ts, now);
       const bitmap = await createImageBitmap(video);
-      worker.postMessage({ type: 'frame', bitmap, ts: ++tsCtr * 33 }, [bitmap]);
+      worker.postMessage({ type: 'frame', bitmap, ts }, [bitmap]);
     } catch (e) { inFlight = false; }
+  }
+  // Once per second, snapshot render fps / track fps / latency.
+  if (rec.on && now - rec.lastSample >= 1000) {
+    const dt = (now - rec.lastSample) / 1000;
+    rec.samples.push({
+      t: Math.round(now - rec.start),
+      renderFps: +(rec.rafCount / dt).toFixed(1),
+      trackFps: +(rec.resultCount / dt).toFixed(1),
+      latencyMs: Math.round(rec.lastLatency),
+      handR: rec.handR, handL: rec.handL,
+    });
+    rec.rafCount = 0; rec.resultCount = 0; rec.lastSample = now;
+    setStatus(`Recording session… ${rec.samples.length}s (render ${rec.samples.at(-1).renderFps} fps)`, 'loading');
   }
   requestAnimationFrame(pump);
 }
@@ -127,8 +153,70 @@ function drawOverlay(results) {
   if (results.poseLandmarks) dots(results.poseLandmarks.slice(11, 17), 'rgba(136,170,238,0.8)', 4);
 }
 
+// ── Record session -> JSON (the soak-test instrument) ──────────────────────
+function startRec() {
+  const now = performance.now();
+  rec.on = true; rec.start = now; rec.lastSample = now;
+  rec.rafCount = 0; rec.resultCount = 0; rec.samples = [];
+  const btn = document.getElementById('v2-rec');
+  if (btn) { btn.textContent = '■ Stop & save JSON'; btn.classList.remove('btn-record'); }
+  setStatus('Recording session… sign continuously for a few minutes.', 'loading');
+}
+function stopRec() {
+  rec.on = false;
+  const btn = document.getElementById('v2-rec');
+  if (btn) { btn.textContent = '● Record session'; btn.classList.add('btn-record'); }
+  const s = rec.samples;
+  if (!s.length) { setStatus('Session too short — nothing saved. Record for at least a few seconds.', 'error'); return; }
+  const fps = s.map(x => x.renderFps), trk = s.map(x => x.trackFps);
+  const avg = (a) => a.length ? +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1) : 0;
+  const head = (a) => a.slice(0, Math.max(1, Math.floor(a.length * 0.25)));
+  const tail = (a) => a.slice(-Math.max(1, Math.floor(a.length * 0.25)));
+  const summary = {
+    durationSec: Math.round((performance.now() - rec.start) / 1000),
+    renderFps: { avg: avg(fps), first25pct: avg(head(fps)), last25pct: avg(tail(fps)), min: Math.min(...fps) },
+    trackFps: { avg: avg(trk), first25pct: avg(head(trk)), last25pct: avg(tail(trk)) },
+    maxLatencyMs: Math.max(...s.map(x => x.latencyMs)),
+    // >20% render-fps drop from start to end = the v1 "degrades over time" signature.
+    degraded: avg(tail(fps)) < avg(head(fps)) * 0.8,
+  };
+  const payload = {
+    kind: 'sgsl-v2-session', version: 1,
+    userAgent: navigator.userAgent,
+    durationMs: Math.round(performance.now() - rec.start),
+    calibrationSettings: calib,
+    summary, samples: s,
+  };
+  download(JSON.stringify(payload), 'sgsl-v2-session.json', 'application/json');
+  setStatus(`Session saved: ${summary.durationSec}s · render ${summary.renderFps.first25pct}→${summary.renderFps.last25pct} fps · ${summary.degraded ? '⚠ DEGRADED' : 'stable'}. Send me sgsl-v2-session.json.`, summary.degraded ? 'error' : 'success');
+}
+
+// ── Screenshot: camera | avatar + metrics footer (like v1) ─────────────────
+function screenshot() {
+  const av = avatar.captureCanvas();
+  const camW = video.videoWidth || 640, camH = video.videoHeight || 480;
+  const c = document.createElement('canvas');
+  c.width = camW * 2 + 20; c.height = camH + 76;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0f1129'; ctx.fillRect(0, 0, c.width, c.height);
+  // camera (mirror to match what you see on screen)
+  ctx.save(); ctx.translate(camW, 0); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, camW, camH); ctx.restore();
+  if (av) ctx.drawImage(av, camW + 20, 0, camW, camH);
+  ctx.fillStyle = '#88aacc'; ctx.font = '12px monospace';
+  (retarget._lastDebug || '').split('\n').slice(0, 4).forEach((ln, i) => ctx.fillText(ln.slice(0, 180), 8, camH + 18 + i * 15));
+  c.toBlob((b) => { if (b) download(b, 'sgsl-v2-shot.png'); }, 'image/png');
+}
+
+function download(data, name, type) {
+  const blob = (data instanceof Blob) ? data : new Blob([data], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ── Calibration panel (same setters as v1 -> tuning carries) ───────────────
-// Persisted per-side under a v2-specific key so it doesn't clobber v1's settings.
 const CALIB_KEY = 'sgsl.v2.calib.v1';
 const DEFAULTS = {
   rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
@@ -157,10 +245,7 @@ function wireCalib() {
     const el = document.getElementById(id);
     const lab = document.getElementById(id + '-label');
     if (!el) return;
-    const refresh = () => {
-      el.value = cur()[key];
-      if (lab) lab.textContent = fmt(cur()[key]);
-    };
+    const refresh = () => { el.value = cur()[key]; if (lab) lab.textContent = fmt(cur()[key]); };
     el.addEventListener('input', () => {
       cur()[key] = parseFloat(el.value);
       if (lab) lab.textContent = fmt(cur()[key]);
@@ -204,6 +289,11 @@ function wireCalib() {
     bind._refreshers.forEach(f => f());
     applyCalib(); saveCalib();
   });
+
+  const recBtn = document.getElementById('v2-rec');
+  if (recBtn) recBtn.addEventListener('click', () => (rec.on ? stopRec() : startRec()));
+  const shotBtn = document.getElementById('v2-shot');
+  if (shotBtn) shotBtn.addEventListener('click', screenshot);
 }
 
 loadCalib();
