@@ -33,6 +33,23 @@ async function fetchJSON(url) {
   return r.json();
 }
 
+// Hidden built-in signs (client-side tombstones): static library files can't be
+// deleted, so a hidden-label list makes them vanish from the Library/Sign-It.
+// Recording (or importing) a sign with the same label un-hides it.
+const HIDDEN_KEY = 'sgsl.hidden-signs.v1';
+const hiddenSet = () => {
+  try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]')); }
+  catch { return new Set(); }
+};
+export function hideSign(label) {
+  const h = hiddenSet(); h.add(label);
+  try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...h])); } catch { /* private mode */ }
+}
+export function unhideSign(label) {
+  const h = hiddenSet();
+  if (h.delete(label)) { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...h])); } catch { /* */ } }
+}
+
 /** Merged manifest: [{ label, frames, source }] sorted by label. */
 export async function getManifest() {
   if (USE_API) {
@@ -44,8 +61,12 @@ export async function getManifest() {
   let local = [];
   try { local = await store.listSigns(); } catch (_) { local = []; }
 
+  const hidden = hiddenSet();
   const map = new Map();
-  for (const s of lib) map.set(s.label, { label: s.label, frames: s.frames, source: 'library' });
+  for (const s of lib) {
+    if (hidden.has(s.label)) continue;   // tombstoned built-in
+    map.set(s.label, { label: s.label, frames: s.frames, source: 'library' });
+  }
   for (const s of local) {
     map.set(s.label, { label: s.label, frames: (s.landmarks || []).length, source: 'local' });
   }
@@ -63,6 +84,7 @@ export async function getSign(label) {
 
 /** Persist a recorded sign. Static mode -> IndexedDB; api mode -> POST. */
 export async function saveSign(rec) {
+  if (rec?.label) unhideSign(rec.label);   // re-recording a hidden label brings it back
   if (USE_API) {
     const r = await fetch('/api/sign', {
       method: 'POST',

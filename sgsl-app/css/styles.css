@@ -215,6 +215,9 @@ html, body {
 .camera-container {
   position: relative; border-radius: 10px; overflow: hidden;
   background: #000; aspect-ratio: 4/3;
+  /* The record panel is a flex column that scrolls; without this the growing
+     controls column SHRINKS the camera preview to a sliver (measured 35px). */
+  flex-shrink: 0;
 }
 .rec-video {
   width: 100%; height: 100%; object-fit: cover;
@@ -319,3 +322,15 @@ html, body {
 }
 .src-tag.src-local   { color: #ffd479; background: rgba(255,212,121,0.14); }
 .src-tag.src-library { color: #88aacc; background: rgba(136,170,204,0.14); }
+
+/* ── Advanced disclosure (calibration + diagnostics folded away by default) ── */
+.advanced { border: 1px solid var(--border); border-radius: 8px; background: var(--surface2); }
+.advanced > summary {
+  cursor: pointer; padding: 8px 12px; font: 600 12px/1.4 Inter, sans-serif;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;
+  list-style: none; user-select: none;
+}
+.advanced > summary::before { content: '▸ '; }
+.advanced[open] > summary::before { content: '▾ '; }
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced .calib-panel { border: none; background: transparent; margin-top: 0; }

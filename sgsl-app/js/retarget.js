@@ -458,6 +458,11 @@ export class SMPLXRetarget {
       this._handFacing[side] = Math.sign(wind) * flipPar * WIND_SIGN[side];
       if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
     }
+    // Raw (post-winding, PRE-calibration) measured basis — the auto-tune wizard solves the
+    // 3-DOF calibration offset from this while the signer holds a known flat-palm pose.
+    const qRaw = this._basisQuat(fingerDir, palmNormal);
+    (this._rawBasis ||= {})[side] = [qRaw.x, qRaw.y, qRaw.z, qRaw.w];
+
     // Manual 3-DOF orientation calibration on the measured hand basis (X=across, Y=finger,
     // Z=palm normal): roll about Y, pitch about X (tilt forward/back), yaw about Z. Applied
     // here (before qHandWorld) so the forearm + finger frame follow. Default {180,0,0} is a

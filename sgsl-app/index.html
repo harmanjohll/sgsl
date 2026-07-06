@@ -90,7 +90,10 @@
           <span id="tolerance-label">8%</span>
         </label>
         <!-- Manual calibration + stability: dial the hand orientation in by eye and steady
-             the avatar while the automatic math is being refined. Persisted in localStorage. -->
+             the avatar while the automatic math is being refined. Persisted in localStorage.
+             Folded behind "Advanced" — learners never need these; Auto-tune sets them. -->
+        <details id="advanced-panel" class="advanced">
+          <summary>Advanced · calibration &amp; diagnostics</summary>
         <div class="calib-panel">
           <button id="calib-handsel" class="btn">Calibrating: Right hand ⇄</button>
           <div class="calib-group-title">Orientation</div>
@@ -148,10 +151,12 @@
             <span id="calib-guardstr-label">100%</span>
           </label>
           <div class="rec-btn-row">
+            <button id="btn-autotune" class="btn">✨ Auto-tune hands</button>
             <button id="btn-calib-reset" class="btn">Reset calibration</button>
             <button id="btn-screenshot" class="btn">📷 Screenshot</button>
           </div>
         </div>
+        </details>
       </div>
       <div id="quality-panel" class="quality-panel hidden">
         <h3 class="quality-title">Quality Check</h3>
@@ -175,7 +180,10 @@
     <section class="viewer">
       <div id="rec-avatar-viewport" class="viewport"></div>
       <div id="rec-avatar-status" class="status status-info">Avatar will mirror your signing in real-time.</div>
-      <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+      <details id="advanced-console" class="advanced">
+        <summary>Live metrics console</summary>
+        <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+      </details>
     </section>
   </main>
 

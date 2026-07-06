@@ -150,10 +150,10 @@ async function renderLibraryList() {
     row.appendChild(btn);
     row.appendChild(tag);
 
+    const del = document.createElement('button');
+    del.className = 'sign-del';
+    del.textContent = '×';
     if (s.source === 'local') {
-      const del = document.createElement('button');
-      del.className = 'sign-del';
-      del.textContent = '×';
       del.title = `Delete local "${s.label}"`;
       del.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -161,8 +161,18 @@ async function renderLibraryList() {
         const res = await signsSource.deleteSign(s.label);
         if (res.ok) { row.remove(); setStatus('lib-status', `"${s.label}" removed from this device.`, 'info'); }
       });
-      row.appendChild(del);
+    } else {
+      // Built-in signs can't be deleted (static files) — hide them locally instead.
+      del.title = `Hide built-in "${s.label}"`;
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!confirm(`Hide the built-in sign "${s.label}"? (Recording it again brings it back.)`)) return;
+        signsSource.hideSign(s.label);
+        row.remove();
+        setStatus('lib-status', `"${s.label}" hidden.`, 'info');
+      });
     }
+    row.appendChild(del);
     list.appendChild(row);
   }
   setStatus('lib-status', `${manifest.length} signs loaded. Click one to play.`, 'success');
