@@ -50,7 +50,7 @@ let inited = false;
 const CALIB_KEY = 'sgsl.calib.v1';
 // Calibrated baseline (tuned live by the signer, 2026-06). New users + Reset start here.
 const CALIB_DEFAULTS = {
-  rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
+  rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
   deformGuard: true,                                 // anatomical clamps (anti-deformation)
   curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25,    // fingers
   thumbCurl: 0.70, thumbSpread: 0.80,                // thumb (decoupled from fingers)
@@ -919,21 +919,26 @@ const mergeSide = (src) => {   // fill a side from saved values, falling back to
   }
   return out;
 };
+// Settings saved before the winding flip-parity fix (calib schema v2) carry a rollDeg that
+// was compensating a ~180° palm negation that no longer happens — shift it by 180° so the
+// user's tuned look is preserved. Normalized to (-180, 180].
+const migrateRoll = (side) => { side.rollDeg = ((side.rollDeg + 180 + 180) % 360) - 180; return side; };
 function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
     if (!s || typeof s !== 'object') return;
+    const migrate = (s.v || 1) < 2 ? migrateRoll : (x) => x;
     if (s.Right || s.Left) {                       // per-side format
-      calibSettings = { Right: mergeSide(s.Right), Left: mergeSide(s.Left) };
+      calibSettings = { Right: migrate(mergeSide(s.Right)), Left: migrate(mergeSide(s.Left)) };
       if (s.side === 'Left' || s.side === 'Right') calibSide = s.side;
     } else {                                       // migrate old single-set format → both hands
-      const flat = mergeSide(s);
+      const flat = migrate(mergeSide(s));
       calibSettings = { Right: flat, Left: { ...flat } };
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
 function saveCalibSettings() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide })); } catch { /* private mode */ }
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide, v: 2 })); } catch { /* private mode */ }
 }
 function applyCalibSettings() {   // push BOTH hands' calibration to the retarget
   for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, calibSettings[side]);
