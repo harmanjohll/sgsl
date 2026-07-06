@@ -21,6 +21,10 @@ const overlay = document.getElementById('v2-overlay');
 const statusEl = document.getElementById('v2-status');
 const dbgEl = document.getElementById('v2-debug');
 
+// Replay/test mode (?replay=1): no webcam, no tracking worker — landmark frames are injected
+// by the fidelity harness (test/fidelity_run.mjs) via window.__sgslTest. Avatar still boots.
+const REPLAY_MODE = new URLSearchParams(location.search).has('replay');
+
 const setStatus = (msg, kind = 'info') => {
   if (!statusEl) return;
   statusEl.textContent = msg;
@@ -37,14 +41,10 @@ retarget.setAvatar(avatar);
 // Classic worker (NOT { type: 'module' }): MediaPipe Tasks-Vision calls importScripts()
 // internally, which module workers forbid. Classic workers allow it, and Chromium still
 // permits the dynamic import() we use inside the worker.
-const worker = new Worker(new URL('./track-worker.js', import.meta.url));
+const worker = REPLAY_MODE ? null : new Worker(new URL('./track-worker.js', import.meta.url));
 let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
 let tsCtr = 0;
-
-// Surface worker-load failures that would otherwise be SILENT.
-worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console)`, 'error');
-worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
 
 // ── Session recorder (measures FPS-over-time so the soak test is objective) ──
 const rec = {
@@ -54,37 +54,49 @@ const rec = {
   sendTimes: new Map(), samples: [],
 };
 
-worker.onmessage = (e) => {
-  const msg = e.data;
-  if (!msg) return;
-  if (msg.type === 'status') {
-    if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
-    if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
-    return;
-  }
-  if (msg.type === 'ready') {
-    workerReady = true;
-    setStatus('Tracking ready — raise a hand; the avatar mirrors you.', 'success');
-    return;
-  }
-  if (msg.type === 'error') {
-    setStatus(`Tracking worker failed: ${msg.message}`, 'error');
-    return;
-  }
-  if (msg.type === 'result') {
-    inFlight = false;
-    rec.resultCount++;
-    const sent = rec.sendTimes.get(msg.ts);
-    if (sent != null) { rec.lastLatency = performance.now() - sent; rec.sendTimes.delete(msg.ts); }
-    const results = toResults(msg);
-    rec.handR = !!results.rightHandWorldLandmarks;
-    rec.handL = !!results.leftHandWorldLandmarks;
-    if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
-    drawOverlay(results);
-    if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
-  }
-};
-worker.postMessage({ type: 'init' });
+// One shared apply path for live tracking AND injected replay frames — the harness
+// exercises exactly what the webcam does.
+function applyResults(results) {
+  if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
+  drawOverlay(results);
+  if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
+}
+
+if (worker) {
+  // Surface worker-load failures that would otherwise be SILENT.
+  worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console)`, 'error');
+  worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg) return;
+    if (msg.type === 'status') {
+      if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
+      if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
+      return;
+    }
+    if (msg.type === 'ready') {
+      workerReady = true;
+      setStatus('Tracking ready — raise a hand; the avatar mirrors you.', 'success');
+      return;
+    }
+    if (msg.type === 'error') {
+      setStatus(`Tracking worker failed: ${msg.message}`, 'error');
+      return;
+    }
+    if (msg.type === 'result') {
+      inFlight = false;
+      rec.resultCount++;
+      const sent = rec.sendTimes.get(msg.ts);
+      if (sent != null) { rec.lastLatency = performance.now() - sent; rec.sendTimes.delete(msg.ts); }
+      const results = toResults(msg);
+      rec.handR = !!results.rightHandWorldLandmarks;
+      rec.handL = !!results.leftHandWorldLandmarks;
+      applyResults(results);
+    }
+  };
+  worker.postMessage({ type: 'init' });
+}
 
 // ── Camera ───────────────────────────────────────────────────────────────
 async function startCamera() {
@@ -296,7 +308,12 @@ function wireCalib() {
   if (shotBtn) shotBtn.addEventListener('click', screenshot);
 }
 
-loadCalib();
+if (!REPLAY_MODE) loadCalib();   // replay: pure defaults — localStorage must not confound scoring
 applyCalib();
 wireCalib();
-startCamera();
+
+// Test hook — used by test/fidelity_run.mjs (and handy from DevTools).
+window.__sgslTest = { retarget, avatar, toResults, applyResults, setStatus, REPLAY_MODE };
+
+if (REPLAY_MODE) setStatus('Replay mode — frames injected by the test harness.', 'info');
+else startCamera();
