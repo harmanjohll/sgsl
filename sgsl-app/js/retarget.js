@@ -766,8 +766,12 @@ export class SMPLXRetarget {
     // hand wrist (index 0); fall back to the pose wrist (15 = signer's
     // left, 16 = signer's right — same anatomical sides the swap assigns)
     // so the arm still tracks for a few frames if the fingers drop out.
-    const rightTargetScreen = rightHandLandmarks?.[0] || pose2DLandmarks?.[15];
-    const leftTargetScreen  = leftHandLandmarks?.[0]  || pose2DLandmarks?.[16];
+    // Pose-wrist fallback indices follow the ANATOMICAL slot convention proven live
+    // (signer raises right hand → results.rightHandLandmarks): MediaPipe pose 16 = the
+    // signer's RIGHT wrist, 15 = LEFT. These were crossed (15/16 swapped), so during a
+    // hand dropout the arm was yanked toward the signer's OTHER wrist.
+    const rightTargetScreen = rightHandLandmarks?.[0] || pose2DLandmarks?.[16];
+    const leftTargetScreen  = leftHandLandmarks?.[0]  || pose2DLandmarks?.[15];
 
     if (this._avatar &&
         ((signerRightArmOn && rightTargetScreen) || (signerLeftArmOn && leftTargetScreen))) {

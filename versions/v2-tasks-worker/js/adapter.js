@@ -17,9 +17,15 @@
    EXACTLY (SWAP_HANDEDNESS = false), so chirality + thumb match v1.
    ============================================================ */
 
+import { HandRouter } from '../../../sgsl-app/js/hand-router.js';
+
 // Mirror of recorder.js's constant. v1 ships with this false (signer's own hand
 // drives the same-side avatar hand — the proven "copy me" anatomical mapping).
 const SWAP_HANDEDNESS = false;
+
+// Temporal continuity: raw per-frame handedness labels flip while hands cross,
+// which swapped the avatar's arms violently. One stream per page → one router.
+const router = new HandRouter();
 
 export function toResults(payload) {
   const results = {
@@ -32,15 +38,13 @@ export function toResults(payload) {
     rightHandWorldLandmarks: null,
   };
 
-  const hands = payload.hands || [];
-  for (let i = 0; i < hands.length; i++) {
-    let side = hands[i].categoryName || (i === 0 ? 'Right' : 'Left');
+  const routed = router.route((payload.hands || []).map((h, i) => {
+    let side = h.categoryName || (i === 0 ? 'Right' : 'Left');
     if (SWAP_HANDEDNESS) side = side === 'Right' ? 'Left' : 'Right';
-    const lm = hands[i].landmarks || null;
-    const world = hands[i].worldLandmarks || null;
-    if (side === 'Right') { results.rightHandLandmarks = lm; results.rightHandWorldLandmarks = world; }
-    else { results.leftHandLandmarks = lm; results.leftHandWorldLandmarks = world; }
-  }
+    return { ...h, categoryName: side };
+  }));
+  if (routed.Right) { results.rightHandLandmarks = routed.Right.landmarks || null; results.rightHandWorldLandmarks = routed.Right.worldLandmarks || null; }
+  if (routed.Left) { results.leftHandLandmarks = routed.Left.landmarks || null; results.leftHandWorldLandmarks = routed.Left.worldLandmarks || null; }
 
   return results;
 }
