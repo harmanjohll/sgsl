@@ -50,7 +50,13 @@ export class HandRouter {
     for (const side of ['Right', 'Left']) {
       const t = this._tracks[side];
       if (!t) continue;
-      for (const d of dets) pairs.push({ side, d, dist: Math.hypot(d.landmarks[0].x - t.x, d.landmarks[0].y - t.y) });
+      // Small label preference (10%) so a single MERGED detection sitting equidistant
+      // between both tracks (hands in contact) resolves to its label's side instead of
+      // hijacking the other hand; real continuity gaps dwarf 10%.
+      for (const d of dets) {
+        const raw = Math.hypot(d.landmarks[0].x - t.x, d.landmarks[0].y - t.y);
+        pairs.push({ side, d, dist: raw * (d.categoryName === side ? 0.9 : 1) });
+      }
     }
     pairs.sort((a, b) => a.dist - b.dist);
     const sideTaken = new Set();
