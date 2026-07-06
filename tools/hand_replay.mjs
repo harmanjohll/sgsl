@@ -33,7 +33,10 @@ import { readFileSync } from 'node:fs';
 
 // ── Constants — kept byte-for-byte in step with retarget.js ──
 // retarget.js:66  HAND_WX/WY/WZ ; :70 HAND_DET ; :87-92 WIND_SIGN/WIND_THRESH
-const HAND_W = [-1, -1, -1];   // HAND_WX, HAND_WY, HAND_WZ
+const HAND_W = [-1, -1, -1];  // pin frame (wristFlip OFF). Production defaults wristFlip ON
+// (wx=+1), which negates `wind` but not palmNormal.z; retarget.js re-parifies the winding
+// under flip, so the facing DECISION is flip-invariant and this un-flipped model remains
+// the canonical frame for pinning WIND_SIGN.   // HAND_WX, HAND_WY, HAND_WZ
 const HAND_DET = -1;
 // Per-side, mirroring retarget.js. BOTH sides want -1 — pinned by handdump_4/5
 // (side "Right") and handdump_6–9 (side "Left", 339 non-edge-on frames: 0%

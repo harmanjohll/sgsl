@@ -231,7 +231,7 @@ function download(data, name, type) {
 // ── Calibration panel (same setters as v1 -> tuning carries) ───────────────
 const CALIB_KEY = 'sgsl.v2.calib.v1';
 const DEFAULTS = {
-  rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
+  rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
   curlGain: 0.70, spreadGain: 0.80, smoothing: 0.75,
 };
 let side = 'Right';
@@ -240,11 +240,18 @@ let calib = { Right: { ...DEFAULTS }, Left: { ...DEFAULTS } };
 function loadCalib() {
   try {
     const raw = JSON.parse(localStorage.getItem(CALIB_KEY) || 'null');
-    if (raw && raw.Right && raw.Left) { calib = raw; side = raw.side || 'Right'; }
+    if (raw && raw.Right && raw.Left) {
+      // Pre-flip-parity-fix settings (schema v2): rollDeg compensated a ~180° palm
+      // negation that no longer happens — shift by 180° to preserve the tuned look.
+      if ((raw.v || 1) < 2) {
+        for (const s2 of ['Right', 'Left']) raw[s2].rollDeg = ((raw[s2].rollDeg + 360) % 360) - 180;
+      }
+      calib = { Right: raw.Right, Left: raw.Left }; side = raw.side || 'Right';
+    }
   } catch (e) { /* defaults */ }
 }
 function saveCalib() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side })); } catch (e) {}
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side, v: 2 })); } catch (e) {}
 }
 function applyCalib() {
   retarget.setHandTuning('Right', calib.Right);

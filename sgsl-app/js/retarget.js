@@ -151,7 +151,11 @@ export class SMPLXRetarget {
    *  the recorder applies the live smoothing per side via setHandTuning. */
   _defaultCalib() {
     return {
-      orientCalib: { rollDeg: -170, pitchDeg: 10, yawDeg: 25 },
+      // rollDeg was -170 while the winding override wrongly negated the palm on every
+      // confident frame (the -170 was eye-tuned to compensate that ~180° error). With the
+      // flip-parity fix the negation is gone, so the equivalent look is -170+180 = +10.
+      // (Saved user settings are migrated the same way in recorder.js / v2 app.js.)
+      orientCalib: { rollDeg: 10, pitchDeg: 10, yawDeg: 25 },
       curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25, thumbCurl: 0.70, thumbSpread: 0.80,
       reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
       guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
@@ -413,7 +417,15 @@ export class SMPLXRetarget {
     // negated a CORRECT raw normal (and 0 confident frames change), so trust the geometry
     // there. The winding override still protects against MP-z flips when it's confident.
     if (Math.abs(wind) > WIND_THRESH) {
-      this._handFacing[side] = Math.sign(wind) * WIND_SIGN[side];
+      // WIND_SIGN was pinned (tools/palm_facing_probe.mjs, hand_replay.mjs) in the
+      // UN-flipped frame (wx = HAND_WX). wristFlip negates `wind` (windRaw is odd in wx)
+      // but NOT palmNormal.z (cross-z and det both flip, cancelling) — so the pinned sign
+      // must be re-parified under flip. Without this, the override negated a CORRECT
+      // normal on every confident frame and the hand+forearm barrel-rolled ~180° at each
+      // |wind|=WIND_THRESH crossing (the across-body "awkward rotation" bug; measured as
+      // 178° steps in test/fidelity_run.mjs yaw/roll sweeps).
+      const flipPar = this._wristFlip ? -1 : 1;
+      this._handFacing[side] = Math.sign(wind) * flipPar * WIND_SIGN[side];
       if (Math.sign(palmNormal.z || 0) !== this._handFacing[side]) palmNormal.negate();
     }
     // Manual 3-DOF orientation calibration on the measured hand basis (X=across, Y=finger,
