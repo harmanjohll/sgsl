@@ -44,7 +44,7 @@ retarget.setAvatar(avatar);
 const worker = REPLAY_MODE ? null : new Worker(new URL('./track-worker.js', import.meta.url));
 let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
-let tsCtr = 0;
+let workerNote = '';    // last worker status (kept visible above the HUD)
 
 // ── Session recorder (measures FPS-over-time so the soak test is objective) ──
 const rec = {
@@ -76,7 +76,9 @@ function applyResults(results) {
   maybeAutoCalibrate(results);
   if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
   drawOverlay(results);
-  if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
+  if (dbgEl && retarget._lastDebug) {
+    dbgEl.textContent = (workerNote ? `[worker] ${workerNote}\n` : '') + retarget._lastDebug;
+  }
 }
 
 if (worker) {
@@ -89,7 +91,8 @@ if (worker) {
     if (!msg) return;
     if (msg.type === 'status') {
       if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
-      if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
+      workerNote = msg.message;   // survives HUD refreshes (applyResults rewrites dbgEl)
+      if (dbgEl) dbgEl.textContent = `[worker] ${workerNote}\n` + (dbgEl.textContent || '');
       return;
     }
     if (msg.type === 'ready') {
@@ -139,7 +142,9 @@ async function pump() {
   if (workerReady && !inFlight && video.readyState >= 2) {
     inFlight = true;
     try {
-      const ts = ++tsCtr * 33;
+      // Real clock: Tasks landmarkers use the timestamp for their internal (OneEuro)
+      // smoothing; a fabricated 30 fps clock at a real ~21 fps skewed velocity ~1.4x.
+      const ts = Math.round(performance.now());
       rec.sendTimes.set(ts, now);
       const bitmap = await createImageBitmap(video);
       worker.postMessage({ type: 'frame', bitmap, ts }, [bitmap]);

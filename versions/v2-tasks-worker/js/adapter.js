@@ -28,8 +28,16 @@ const SWAP_HANDEDNESS = false;
 const router = new HandRouter();
 
 export function toResults(payload) {
+  // Tasks-Vision sometimes materializes landmark.visibility as 0 (proto default) where
+  // legacy Holistic carried a real score. All-zero visibility would freeze the torso
+  // gate and reject perfectly-tracked shoulders in _bodyAnchor — strip it so the
+  // `(visibility ?? 1)` gates treat it as "no signal", exactly like v1's hands.
+  let pose = payload.pose || null;
+  if (pose && pose.length && pose.every(lm => !(lm.visibility > 0))) {
+    pose = pose.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }));
+  }
   const results = {
-    poseLandmarks: payload.pose || null,
+    poseLandmarks: pose,
     za: payload.poseWorld || null,            // Holistic called this `za`; retarget reads `za || ea`
     faceLandmarks: payload.face || null,
     leftHandLandmarks: null,

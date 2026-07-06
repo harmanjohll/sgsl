@@ -246,7 +246,10 @@ export class SMPLXRetarget {
   /** Measure finger angles for whichever hands are present, routed to the same
    *  retarget sides _driveHand uses. Returns {Left, Right} (null where absent). */
   fingerAnglesFromResults(results) {
-    const map = { Right: results.leftHandWorldLandmarks, Left: results.rightHandWorldLandmarks };
+    // Same-side routing, matching applyFromMediaPipe (Right rig <- results.right*).
+    // This was crossed, so any per-signer finger calibration captured through it
+    // measured the OTHER hand.
+    const map = { Right: results.rightHandWorldLandmarks, Left: results.leftHandWorldLandmarks };
     const out = { Left: null, Right: null };
     for (const side of ['Left', 'Right']) {
       const w = map[side];
