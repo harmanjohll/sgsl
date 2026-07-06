@@ -622,6 +622,10 @@ export class SMPLXRetarget {
       );
     }
 
+    // Diagnostic: the IK's own target, so the fidelity harness can measure how far
+    // the posed wrist actually lands from it (|wrist−T| = the "reaches the dot" score).
+    (this._armDbg ||= {})[side] = { target: [T.x, T.y, T.z], shoulderW: avShoulderW };
+
     const S = (side === "Right" ? Rs : Ls).clone();
     const { L1, L2, upperRestAxis, lowerRestAxis } = rig;
 
