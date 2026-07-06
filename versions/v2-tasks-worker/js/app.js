@@ -54,9 +54,26 @@ const rec = {
   sendTimes: new Map(), samples: [],
 };
 
+// One-shot body auto-calibration: v1's Record flow pins a STABLE shoulder anchor via its
+// Calibrate button; v2 had none, so the reach anchor was recomputed from the live (jittery,
+// occludable) shoulders every frame. Median of the first ~40 good pose frames -> setCalibration.
+const autoCal = { samples: [], done: false };
+function maybeAutoCalibrate(results) {
+  if (autoCal.done) return;
+  const p = results.poseLandmarks, L = p?.[11], R = p?.[12];
+  if (!L || !R || (L.visibility ?? 1) < 0.5 || (R.visibility ?? 1) < 0.5) return;
+  autoCal.samples.push([(L.x + R.x) / 2, (L.y + R.y) / 2, Math.hypot(L.x - R.x, L.y - R.y)]);
+  if (autoCal.samples.length >= 40) {
+    const med = (i) => autoCal.samples.map(s => s[i]).sort((a, b) => a - b)[Math.floor(autoCal.samples.length / 2)];
+    retarget.setCalibration({ shoulderMid: [med(0), med(1)], shoulderWidth: med(2) });
+    autoCal.done = true;
+  }
+}
+
 // One shared apply path for live tracking AND injected replay frames — the harness
 // exercises exactly what the webcam does.
 function applyResults(results) {
+  maybeAutoCalibrate(results);
   if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
   drawOverlay(results);
   if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
