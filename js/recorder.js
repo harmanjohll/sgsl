@@ -16,6 +16,7 @@ import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { AutoCut, trimFrames } from './autocut.js';
+import { toResults } from './tasks-adapter.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
@@ -26,6 +27,13 @@ import { reconstructionError } from './metrics.js';
 let avatar = null;
 let retarget = null;
 let holisticModel = null;
+// Worker tracking (default): MediaPipe Tasks-Vision in a classic Web Worker — tracking
+// off the main thread (v2's proven architecture). ?tracker=legacy forces the old
+// main-thread Holistic path; any worker-init failure also falls back to it.
+const TRACKER_MODE = new URLSearchParams(location.search).get('tracker') || 'worker';
+let trackWorker = null;
+let workerTracking = false;
+let workerInFlight = false;
 let camera = null;
 // MediaPipe Tasks HandLandmarker — true 3D (metric) world landmarks for the
 // hands, fused into the Holistic results each frame. Holistic still drives
@@ -167,6 +175,72 @@ async function setupMediaPipe() {
   const statusEl = document.getElementById('rec-camera-status');
   if (!videoEl) return;
 
+  if (TRACKER_MODE !== 'legacy') {
+    const ok = await setupWorkerTracking(videoEl, statusEl)
+      .catch((e) => { console.warn('[Recorder] worker tracking failed:', e); return false; });
+    if (ok) return;
+    setRecStatus('Worker tracking unavailable — using the legacy tracker.', 'info');
+  }
+  await setupLegacyTracking(videoEl, statusEl);
+}
+
+// Tasks-Vision in a worker: camera -> ImageBitmap (one in flight) -> worker ->
+// toResults -> the SAME onHolisticResults as legacy (overlay/record/dump/calibration
+// unchanged). Resolves false (and cleans up) if the worker can't come up.
+async function setupWorkerTracking(videoEl, statusEl) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 640, height: 480, facingMode: 'user' }, audio: false,
+  });
+  videoEl.srcObject = stream;
+  await videoEl.play();
+
+  const worker = new Worker(new URL('./track-worker.js', import.meta.url));
+  const ready = await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 60000);
+    worker.onerror = () => { clearTimeout(timeout); resolve(false); };
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg) return;
+      if (msg.type === 'status') { if (statusEl) statusEl.textContent = `Loading tracking — ${msg.message}`; return; }
+      if (msg.type === 'ready') { clearTimeout(timeout); resolve(true); }
+      if (msg.type === 'error') { clearTimeout(timeout); resolve(false); }
+    };
+    worker.postMessage({ type: 'init' });
+  });
+  if (!ready) {
+    worker.terminate();
+    stream.getTracks().forEach((t) => t.stop());   // the legacy Camera util re-acquires
+    videoEl.srcObject = null;
+    return false;
+  }
+
+  trackWorker = worker;
+  workerTracking = true;
+  window.__sgslWorkerReady = true;   // read by test/mainapp_smoke.mjs
+  if (statusEl) statusEl.classList.add('hidden');
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg) return;
+    if (msg.type === 'result') { workerInFlight = false; onHolisticResults(toResults(msg)); }
+    else if (msg.type === 'status') console.log('[Recorder] worker:', msg.message);
+    else if (msg.type === 'error') console.warn('[Recorder] worker:', msg.message);
+  };
+  const pump = async () => {
+    if (!workerInFlight && videoEl.readyState >= 2) {
+      workerInFlight = true;
+      try {
+        const bitmap = await createImageBitmap(videoEl);
+        // Real clock: the landmarkers' internal smoothing keys off this timestamp.
+        trackWorker.postMessage({ type: 'frame', bitmap, ts: Math.round(performance.now()) }, [bitmap]);
+      } catch { workerInFlight = false; }
+    }
+    requestAnimationFrame(pump);
+  };
+  requestAnimationFrame(pump);
+  return true;
+}
+
+async function setupLegacyTracking(videoEl, statusEl) {
   // @ts-ignore — loaded via CDN
   holisticModel = new window.Holistic({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1675471629/${file}`,
@@ -292,7 +366,7 @@ function startHandDump() {
   if (dumping) return;
   // Refuse to start unless we'll actually capture something — the past empty
   // dumps happened because the dump ran while no 3D hand was being tracked.
-  if (!handLandmarker) {
+  if (!handLandmarker && !workerTracking) {
     setRecStatus('Hand model still loading — wait a few seconds, raise your hand, then click again.', 'error');
     return;
   }
@@ -370,7 +444,7 @@ function updateDumpButton() {
     btn.style.cursor = 'default';
     return;
   }
-  const ready = !!handLandmarker && dumpHandTrackedNow;
+  const ready = (!!handLandmarker || workerTracking) && dumpHandTrackedNow;
   btn.disabled = !ready;
   btn.style.background = ready ? '#33aa77' : '#6b7280';
   btn.style.cursor = ready ? 'pointer' : 'not-allowed';
