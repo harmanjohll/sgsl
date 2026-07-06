@@ -249,10 +249,14 @@ function download(data, name, type) {
 const CALIB_KEY = 'sgsl.v2.calib.v1';
 const DEFAULTS = {
   rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
-  curlGain: 1.00, spreadGain: 1.00, smoothing: 0.75,
+  curlGain: 1.00, spreadGain: 1.00, smoothing: 0.5,
 };
+// Baseline eye-tuned on the RIGHT hand; LEFT needs the chiral mirror (roll/yaw flipped).
+const defaultsFor = (s2) => s2 === 'Left'
+  ? { ...DEFAULTS, rollDeg: -DEFAULTS.rollDeg, yawDeg: -DEFAULTS.yawDeg }
+  : { ...DEFAULTS };
 let side = 'Right';
-let calib = { Right: { ...DEFAULTS }, Left: { ...DEFAULTS } };
+let calib = { Right: defaultsFor('Right'), Left: defaultsFor('Left') };
 
 function loadCalib() {
   try {
@@ -261,7 +265,12 @@ function loadCalib() {
       // Pre-flip-parity-fix settings (schema v2): rollDeg compensated a ~180° palm
       // negation that no longer happens — shift by 180° to preserve the tuned look.
       if ((raw.v || 1) < 2) {
-        for (const s2 of ['Right', 'Left']) raw[s2].rollDeg = ((raw[s2].rollDeg + 360) % 360) - 180;
+        for (const s2 of ['Right', 'Left']) {
+          const c = raw[s2];
+          // Untouched old defaults -> new side-correct defaults; else preserve with roll shift.
+          if (Math.abs(c.rollDeg - (-170)) < 1e-6 && Math.abs((c.yawDeg ?? 25) - 25) < 1e-6) raw[s2] = defaultsFor(s2);
+          else c.rollDeg = ((c.rollDeg + 360) % 360) - 180;
+        }
       }
       calib = { Right: raw.Right, Left: raw.Left }; side = raw.side || 'Right';
     }
@@ -321,7 +330,7 @@ function wireCalib() {
   }
   const resetBtn = document.getElementById('v2-reset');
   if (resetBtn) resetBtn.addEventListener('click', () => {
-    calib[side] = { ...DEFAULTS };
+    calib[side] = defaultsFor(side);
     bind._refreshers.forEach(f => f());
     applyCalib(); saveCalib();
   });

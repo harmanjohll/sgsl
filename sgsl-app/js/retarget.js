@@ -149,23 +149,28 @@ export class SMPLXRetarget {
     // mirrored) orientation. Each side stores a full set; _activate(side) loads one into the
     // working this._* scratch fields just before that side is driven (so _driveHand/_solveArmIK
     // stay unchanged). Seeded identical; the left is tuned via the Record-panel Left⇄Right selector.
-    this._sideCal = { Right: this._defaultCalib(), Left: this._defaultCalib() };
+    this._sideCal = { Right: this._defaultCalib('Right'), Left: this._defaultCalib('Left') };
     this._activate('Right');
   }
 
   /** A fresh per-side calibration set (the shipped baseline). smoothing 0 = crisp playback;
    *  the recorder applies the live smoothing per side via setHandTuning. */
-  _defaultCalib() {
+  _defaultCalib(side = 'Right') {
+    // Baseline eye-tuned on the signer's RIGHT hand. A correction rotation for one hand
+    // maps to its MIRROR on the other (conjugation by the across-axis reflection): pitch
+    // (X) keeps its sign, roll (Y), yaw (Z) and the thumb swing negate. Seeding both sides
+    // identical left a constant ~50° wrist error on the non-tuned hand.
+    const m = side === 'Left' ? -1 : 1;
     return {
       // rollDeg was -170 while the winding override wrongly negated the palm on every
       // confident frame (the -170 was eye-tuned to compensate that ~180° error). With the
       // flip-parity fix the negation is gone, so the equivalent look is -170+180 = +10.
       // (Saved user settings are migrated the same way in recorder.js / v2 app.js.)
-      orientCalib: { rollDeg: 10, pitchDeg: 10, yawDeg: 25 },
+      orientCalib: { rollDeg: 10 * m, pitchDeg: 10, yawDeg: 25 * m },
       // Gains were eye-tuned (0.70/0.80) while orientation bugs distorted the hand; on
       // ground-truth landmarks the direct-aim math reproduces bends exactly at 1.0
       // (test/fidelity_run.mjs shape scenarios). Sliders remain for per-user taste.
-      curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25, thumbCurl: 1.00, thumbSpread: 1.00,
+      curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25 * m, thumbCurl: 1.00, thumbSpread: 1.00,
       reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
       guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
     };
@@ -181,9 +186,13 @@ export class SMPLXRetarget {
     this._reachDepth = c.reachDepth; this._reachGain = c.reachGain;
     this._wristFlip = c.wristFlip; this._deformGuard = c.deformGuard; this._guardStrictness = c.guardStrictness;
     this._smoothing = c.smoothing; this._handLerp = c.handLerp; this._armLerp = c.armLerp;
+    // (per-frame lerp fractions; call sites stretch them by _rateK via _dtLerp)
   }
 
   /** Per-hand tuning. `side` = 'Right'|'Left'; `c` = flat {rollDeg,…,smoothing} (any subset). */
+  /** Stretch a per-frame lerp fraction to the actual call rate (see _rateK). */
+  _dtLerp(a) { const k = this._rateK || 1; return k === 1 ? a : 1 - Math.pow(1 - a, k); }
+
   setHandTuning(side, c) {
     const cal = this._sideCal[side]; if (!cal || !c) return;
     const num = (v) => typeof v === 'number' && isFinite(v);
@@ -489,14 +498,14 @@ export class SMPLXRetarget {
         }
       }
       const pInv = lowerArm.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
-      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), this._armLerp);
+      lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), this._dtLerp(this._armLerp));
       lowerArm.updateWorldMatrix(true, true); // refresh the Hand (child) world transform too
       const res = hand.getWorldPosition(new THREE.Vector3())
         .sub(lowerArm.getWorldPosition(new THREE.Vector3()));
       if (res.lengthSq() > 1e-9) wristBend = Math.acos(clampNum(fingerDir.dot(res.normalize()), -1, 1)) * 180 / Math.PI;
     }
 
-    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal, this._handLerp);
+    this._orientHand(hand, rig.fingerAxis, rig.palmAxis, fingerDir, palmNormal, this._dtLerp(this._handLerp));
     hand.updateWorldMatrix(true, true);
 
     // Wrist deformation guard: cap the hand's rotation away from its rest relationship to the
@@ -508,7 +517,10 @@ export class SMPLXRetarget {
       const dev = armRig.handBindLocal.clone().invert().multiply(hand.quaternion);
       const ang = 2 * Math.acos(Math.min(1, Math.abs(dev.w)));
       if (ang > wristMax) {
-        hand.quaternion.copy(armRig.handBindLocal).multiply(new THREE.Quaternion().slerp(dev, wristMax / ang));
+        // Converge toward the clamped pose rather than hard-copying it: when the bend
+        // oscillates around the limit, the hard rewrite read as a notchy "catch".
+        const clamped = armRig.handBindLocal.clone().multiply(new THREE.Quaternion().slerp(dev, wristMax / ang));
+        hand.quaternion.slerp(clamped, 0.65);
         hand.updateWorldMatrix(true, true);
       }
     }
@@ -565,7 +577,7 @@ export class SMPLXRetarget {
         const dir = toHand(d.normalize(), sg, cg);
         if (swing) dir.applyAxisAngle(Za, swing); // swing the thumb across the palm plane
         const maxA = this._deformGuard ? loosen((isThumb ? THUMB_MAX : FINGER_MAX)[i]) : Math.PI;
-        this._aimBone(bone, fr.fwdLocal, dir, this._handLerp, maxA);
+        this._aimBone(bone, fr.fwdLocal, dir, this._dtLerp(this._handLerp), maxA);
         bone.updateWorldMatrix(true, false); // so the next bone in the chain aims off it
       }
     }
@@ -715,11 +727,11 @@ export class SMPLXRetarget {
     // Aim upper arm S→E (places the elbow). When a 3D hand drives this side,
     // _driveHand owns the forearm (re-aims it to follow the hand); aiming it at T
     // here too would make the two slerps fight and leave the wrist knotted, so skip it.
-    this._aimBone(ua, upperRestAxis, E.clone().sub(S), this._armLerp);
+    this._aimBone(ua, upperRestAxis, E.clone().sub(S), this._dtLerp(this._armLerp));
     ua.updateWorldMatrix(true, true);
     if (!skipForearm) {
       const Ew = la.getWorldPosition(new THREE.Vector3());
-      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew), this._armLerp); // forearm fallback when no 3D hand
+      this._aimBone(la, lowerRestAxis, T.clone().sub(Ew), this._dtLerp(this._armLerp)); // forearm fallback when no 3D hand
     }
     return true;
   }
@@ -745,6 +757,14 @@ export class SMPLXRetarget {
       : { runtime: "mediapipe" };
 
     this._dc++;
+    // Rate compensation (stretch-only): the slerp constants were tuned at ~30 fps, but v2
+    // applies results at the tracking rate (~20-24 fps), silently over-smoothing every time
+    // constant ~1.3-1.5x. Convert per-call lerp fractions to per-TIME: a = 1-(1-a)^(dt/33ms).
+    // Clamped to [1,3]: only stretch for slow call rates — never shrink for fast repeated
+    // calls (replay/preview apply frames back-to-back and must still converge).
+    const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    this._rateK = this._lastApplyMs ? clampNum((nowMs - this._lastApplyMs) / 33.33, 1, 3) : 1;
+    this._lastApplyMs = nowMs;
 
     if (faceLandmarks && faceLandmarks.length >= 468) {
       riggedFace = Kalidokit.Face.solve(faceLandmarks, solveOpts);

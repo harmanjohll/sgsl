@@ -57,10 +57,15 @@ const CALIB_DEFAULTS = {
   thumbCurl: 1.00, thumbSpread: 1.00,                // thumb (decoupled from fingers)
   reachDepth: 0.90, reachGain: 1.00,                 // reach
   guardStrictness: 1,                                // deformation-guard strength
-  smoothing: 0.75,                                   // stability
+  smoothing: 0.5,                                    // stability (lerps are rate-compensated now)
 };
+// The baseline was eye-tuned on the RIGHT hand; the LEFT hand needs the chiral mirror
+// (roll/yaw/thumb sign-flipped, pitch kept) or it carries a constant ~50° wrist error.
+const calibDefaultsFor = (side) => side === 'Left'
+  ? { ...CALIB_DEFAULTS, rollDeg: -CALIB_DEFAULTS.rollDeg, yawDeg: -CALIB_DEFAULTS.yawDeg, thumbDeg: -CALIB_DEFAULTS.thumbDeg }
+  : { ...CALIB_DEFAULTS };
 let calibSide = 'Right';   // which hand the calibration sliders currently edit
-let calibSettings = { Right: { ...CALIB_DEFAULTS }, Left: { ...CALIB_DEFAULTS } };
+let calibSettings = { Right: calibDefaultsFor('Right'), Left: calibDefaultsFor('Left') };
 
 // Temporary live IK diagnostic (set false to hide). Draws a ring on each
 // hand showing which avatar arm it drives and whether that arm is "on".
@@ -929,17 +934,24 @@ const mergeSide = (src) => {   // fill a side from saved values, falling back to
 // was compensating a ~180° palm negation that no longer happens — shift it by 180° so the
 // user's tuned look is preserved. Normalized to (-180, 180].
 const migrateRoll = (side) => { side.rollDeg = ((side.rollDeg + 180 + 180) % 360) - 180; return side; };
+// A pre-v2 side whose values still sat at the OLD shipped defaults was never really tuned —
+// give it the NEW side-correct defaults instead of a blind roll-shift.
+const wasOldDefaults = (c) => c && Math.abs(c.rollDeg - (-170)) < 1e-6 && Math.abs((c.yawDeg ?? 25) - 25) < 1e-6 && Math.abs((c.thumbDeg ?? 25) - 25) < 1e-6;
 function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
     if (!s || typeof s !== 'object') return;
-    const migrate = (s.v || 1) < 2 ? migrateRoll : (x) => x;
+    const old = (s.v || 1) < 2;
+    const migrate = (saved, side) => {
+      if (!old) return mergeSide(saved);
+      if (!saved || wasOldDefaults(saved)) return calibDefaultsFor(side);
+      return migrateRoll(mergeSide(saved));
+    };
     if (s.Right || s.Left) {                       // per-side format
-      calibSettings = { Right: migrate(mergeSide(s.Right)), Left: migrate(mergeSide(s.Left)) };
+      calibSettings = { Right: migrate(s.Right, 'Right'), Left: migrate(s.Left, 'Left') };
       if (s.side === 'Left' || s.side === 'Right') calibSide = s.side;
     } else {                                       // migrate old single-set format → both hands
-      const flat = migrate(mergeSide(s));
-      calibSettings = { Right: flat, Left: { ...flat } };
+      calibSettings = { Right: migrate(s, 'Right'), Left: migrate({ ...s }, 'Left') };
     }
   } catch { /* ignore corrupt/absent settings */ }
 }
@@ -1000,7 +1012,7 @@ function wireCalibControls() {
     setRecStatus(`Now calibrating your ${calibSide} hand.`, 'info');
   });
   document.getElementById('btn-calib-reset')?.addEventListener('click', () => {
-    calibSettings[calibSide] = { ...CALIB_DEFAULTS };
+    calibSettings[calibSide] = calibDefaultsFor(calibSide);
     syncs.forEach((s) => s());
     applyCalibSettings(); saveCalibSettings();
     setRecStatus(`${calibSide} hand calibration reset to defaults.`, 'info');
