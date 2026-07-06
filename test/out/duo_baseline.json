@@ -1,0 +1,131 @@
+{
+ "results": [
+  {
+   "name": "R-yaw",
+   "kind": "orient",
+   "meanErr": 0,
+   "maxStep": 5.1,
+   "flipCount": 0,
+   "pass": true,
+   "facingChanges": 33
+  },
+  {
+   "name": "R-roll",
+   "kind": "orient",
+   "meanErr": 0,
+   "maxStep": 10,
+   "flipCount": 0,
+   "pass": true,
+   "facingChanges": 35
+  },
+  {
+   "name": "R-pitch",
+   "kind": "orient",
+   "meanErr": 0,
+   "maxStep": 5,
+   "flipCount": 0,
+   "pass": true,
+   "facingChanges": 29
+  },
+  {
+   "name": "L-yaw",
+   "kind": "orient",
+   "meanErr": 0,
+   "maxStep": 5.1,
+   "flipCount": 0,
+   "pass": true,
+   "facingChanges": 33
+  },
+  {
+   "name": "L-roll",
+   "kind": "orient",
+   "meanErr": 0,
+   "maxStep": 10,
+   "flipCount": 0,
+   "pass": true,
+   "facingChanges": 35
+  },
+  {
+   "name": "shape-flat",
+   "kind": "shape",
+   "meanErr": 0,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "shape-fist",
+   "kind": "shape",
+   "meanErr": 0,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "shape-V",
+   "kind": "shape",
+   "meanErr": 0,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "shape-point",
+   "kind": "shape",
+   "meanErr": 0,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "cross-clean",
+   "kind": "arm",
+   "medianReach": 0.085,
+   "maxJump": 0.067,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "cross-occlusion",
+   "kind": "arm",
+   "medianReach": 0.085,
+   "maxJump": 0.067,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "cross-labelflip",
+   "kind": "arm",
+   "medianReach": 0.085,
+   "maxJump": 0.067,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "duo-approach",
+   "kind": "duo",
+   "maxDrop": 0.048,
+   "fingerDrift": 0,
+   "reacquire": 0.041,
+   "rightTrack": 0.097,
+   "pass": true,
+   "facingChanges": 0
+  },
+  {
+   "name": "duo-dropout",
+   "kind": "duo",
+   "maxDrop": 1.498,
+   "fingerDrift": 75.5,
+   "reacquire": 0.874,
+   "rightTrack": 0.097,
+   "pass": false,
+   "facingChanges": 0
+  },
+  {
+   "name": "duo-merged",
+   "kind": "duo",
+   "maxDrop": 1.498,
+   "fingerDrift": 75.5,
+   "reacquire": 0.874,
+   "rightTrack": 0.102,
+   "pass": false,
+   "facingChanges": 0
+  }
+ ]
+}

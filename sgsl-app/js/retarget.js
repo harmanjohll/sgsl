@@ -37,6 +37,15 @@ const WRIST_VIS_THRESH = 0.5;
 // consecutive failure frames before we start slerping it back to
 // rest. 5 frames at ~30 fps = ~160 ms grace window.
 const ARM_HYSTERESIS_FRAMES = 5;
+// Hands-interacting hold: when the two hands are CLOSE (contact signs), MediaPipe
+// drops/merges detections; without a hold the lost side's fingers relax immediately and
+// its arm collapses to rest 5 frames later, then snaps back (measured 1.5 SW wrist drop +
+// 75° finger relax in test/fidelity_run.mjs duo-dropout). While close, a side that loses
+// its detection FREEZES (streak sustained, held target, fingers untouched), bounded by
+// this many frames (~2 s) so a genuine exit still relaxes. Enter/exit thresholds are in
+// shoulder-width units with hysteresis so the state doesn't flap at the boundary.
+const INTERACTION_HOLD_MAX = 45;
+const HANDS_CLOSE_ENTER = 1.1, HANDS_CLOSE_EXIT = 1.4;
 
 // ── Hands-first arm IK tuning ───────────────────────────────────
 // Map the tracked wrist's screen position (normalized 0..1) to a world
@@ -787,13 +796,35 @@ export class SMPLXRetarget {
     const rawRightOk = handDetected(rightHandLandmarks) || (rightHandWorld?.length >= 21);
     const rawLeftOk  = handDetected(leftHandLandmarks)  || (leftHandWorld?.length >= 21);
 
+    // Hands-interacting hold (see INTERACTION_HOLD_MAX above): closeness from the current
+    // hand wrists, falling back to the last held targets so the signal survives the exact
+    // frame a detection vanishes.
+    const wRc = rightHandLandmarks?.[0] || this._lastTarget?.Right;
+    const wLc = leftHandLandmarks?.[0] || this._lastTarget?.Left;
+    const anchorScale = this._calib?.scale || this._anchorEma?.scale || 0.3;
+    let handsClose = false;
+    if (wRc && wLc) {
+      const dSW = Math.hypot(wRc.x - wLc.x, wRc.y - wLc.y) / anchorScale;
+      handsClose = this._handsClose ? dSW < HANDS_CLOSE_EXIT : dSW < HANDS_CLOSE_ENTER;
+    }
+    this._handsClose = handsClose;
+    this._holdFrames ||= { Right: 0, Left: 0 };
+    const holdSide = (side, rawOk) => {
+      if (rawOk) { this._holdFrames[side] = 0; return false; }
+      if (!handsClose || this._holdFrames[side] >= INTERACTION_HOLD_MAX) return false;
+      this._holdFrames[side]++;
+      return true;
+    };
+    const holdRight = holdSide('Right', rawRightOk);
+    const holdLeft = holdSide('Left', rawLeftOk);
+
     // Hysteresis: fill the streak up to MAX when the raw signal is
     // good; decrement when it's bad. Arm is "on" whenever > 0.
     const bump = (streak, ok) => ok
       ? ARM_HYSTERESIS_FRAMES
       : Math.max(0, streak - 1);
-    this._rightArmStreak = bump(this._rightArmStreak, rawRightOk);
-    this._leftArmStreak  = bump(this._leftArmStreak,  rawLeftOk);
+    this._rightArmStreak = bump(this._rightArmStreak, rawRightOk || holdRight);
+    this._leftArmStreak  = bump(this._leftArmStreak,  rawLeftOk || holdLeft);
     const signerRightArmOn = this._rightArmStreak > 0;
     const signerLeftArmOn  = this._leftArmStreak  > 0;
 
@@ -826,8 +857,12 @@ export class SMPLXRetarget {
       return lm && (lm.visibility ?? 1) >= WRIST_VIS_THRESH ? lm : null;
     };
     const lastT = (this._lastTarget ||= { Right: null, Left: null });
-    const rightTargetScreen = rightHandLandmarks?.[0] || poseWrist(16) || lastT.Right;
-    const leftTargetScreen  = leftHandLandmarks?.[0]  || poseWrist(15) || lastT.Left;
+    // During an interaction hold the FROZEN hand target outranks the pose wrist: the hands
+    // are touching, so the held position is where the hand actually is — while the pose
+    // model's wrist is at its least reliable (occluded by the other hand) and dragging the
+    // arm to a bad pose wrist is exactly the collapse the hold exists to prevent.
+    const rightTargetScreen = rightHandLandmarks?.[0] || (holdRight ? lastT.Right : null) || poseWrist(16) || lastT.Right;
+    const leftTargetScreen  = leftHandLandmarks?.[0]  || (holdLeft ? lastT.Left : null)  || poseWrist(15) || lastT.Left;
     if (rightHandLandmarks?.[0]) lastT.Right = { x: rightHandLandmarks[0].x, y: rightHandLandmarks[0].y };
     if (leftHandLandmarks?.[0])  lastT.Left  = { x: leftHandLandmarks[0].x,  y: leftHandLandmarks[0].y };
 
@@ -864,15 +899,15 @@ export class SMPLXRetarget {
     } else if (handDetected(rightHandLandmarks)) {
       this._writeHand(vrm, "Right", Kalidokit.Hand.solve(rightHandLandmarks, "Right"));
       riggedRightHand = true;
-    } else if (this._avatar) {
-      this._avatar.restFingers("Right", 0.25); // no hand → fingers relax to rest
+    } else if (this._avatar && !holdRight) {
+      this._avatar.restFingers("Right", 0.25); // no hand → fingers relax to rest (unless held)
     }
     if (leftHandWorld && leftHandWorld.length >= 21) {
       this._activate("Left"); this._driveHand(vrm, "Left", leftHandWorld); riggedLeftHand = true;
     } else if (handDetected(leftHandLandmarks)) {
       this._writeHand(vrm, "Left", Kalidokit.Hand.solve(leftHandLandmarks, "Left"));
       riggedLeftHand = true;
-    } else if (this._avatar) {
+    } else if (this._avatar && !holdLeft) {
       this._avatar.restFingers("Left", 0.25);
     }
 
@@ -890,7 +925,7 @@ export class SMPLXRetarget {
     this._lastDebug =
         calLine('Right') + `\n` + calLine('Left')
       + `\nFrame ${this._dc}   pose2D:${pose2DLandmarks ? pose2DLandmarks.length : 0}  face:${faceLandmarks ? faceLandmarks.length : 0}`
-      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}`
+      + `\nMP hands  signer-R:${results.rightHandLandmarks ? 'y' : 'n'}  signer-L:${results.leftHandLandmarks ? 'y' : 'n'}  world R:${rightHandWorld ? 'y' : 'n'} L:${leftHandWorld ? 'y' : 'n'}  close:${handsClose ? 'y' : 'n'} hold R:${this._holdFrames.Right} L:${this._holdFrames.Left}`
       + `\navatar LEFT : ${signerLeftArmOn ? 'ON ' : 'off'} tgt:${fmt(leftTargetScreen)} | hand:${lSrc} ${hd('Left')}`
       + `\navatar RIGHT: ${signerRightArmOn ? 'ON ' : 'off'} tgt:${fmt(rightTargetScreen)} | hand:${rSrc} ${hd('Right')}`;
 

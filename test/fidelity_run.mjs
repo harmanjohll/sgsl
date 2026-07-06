@@ -58,6 +58,9 @@ const PASS = {
   shapeMeanErr: 15,     // deg: mean PIP/DIP bend error
   armReach: 0.25,       // shoulder-widths: median |wrist − IK target| (converged frames)
   armMaxJump: 0.35,     // shoulder-widths: max per-frame wrist jump in occlusion/flip scenarios
+  duoMaxDrop: 0.25,     // SW: how far the DROPPED side's wrist may drift during a contact dropout
+  duoFingerDrift: 15,   // deg: how much the dropped side's fingers may relax during the hold
+  duoReacquire: 0.35,   // SW: max per-frame wrist jump when the hand is re-detected
 };
 
 async function startServer() {
@@ -77,37 +80,42 @@ const MEASURE = async ({ frames, side, K }) => {
   const vrm = T.avatar.vrm;
   // Deterministic tuning: retarget defaults but NO smoothing (harness measures math, not lag).
   for (const s of ['Right', 'Left']) T.retarget.setHandTuning(s, { smoothing: 0 });
-  const hand = vrm.humanoid.getBoneNode(BN[side + 'Hand']);
-  const out = [];
-  for (const fr of frames) {
-    const results = T.toResults(fr.payload);
-    for (let k = 0; k < K; k++) T.applyResults(results);
-    vrm.scene.updateMatrixWorld(true);
+  const measureSide = (sideName) => {
+    const hand = vrm.humanoid.getBoneNode(BN[sideName + 'Hand']);
     const q = hand.getWorldQuaternion(new THREE.Quaternion());
     const wrist = hand.getWorldPosition(new THREE.Vector3());
-    const armDbg = (T.retarget._armDbg || {})[side] || null;
+    const armDbg = (T.retarget._armDbg || {})[sideName] || null;
     const bends = {};
     // VRM names the pinky "Little"; fixtures/gt call it "Pinky".
     for (const [f, rigName] of [['Index', 'Index'], ['Middle', 'Middle'], ['Ring', 'Ring'], ['Pinky', 'Little']]) {
-      const bones = ['Proximal', 'Intermediate', 'Distal'].map(s2 => vrm.humanoid.getBoneNode(BN[side + rigName + s2]));
+      const bones = ['Proximal', 'Intermediate', 'Distal'].map(s2 => vrm.humanoid.getBoneNode(BN[sideName + rigName + s2]));
       if (bones.some(b => !b)) continue;
       const p = bones.map(b => b.getWorldPosition(new THREE.Vector3()));
-      const rigF = T.avatar.handRig?.[side]?.fingers?.[rigName]?.[2];
+      const rigF = T.avatar.handRig?.[sideName]?.fingers?.[rigName]?.[2];
       const dq = bones[2].getWorldQuaternion(new THREE.Quaternion());
       const dDir = rigF?.fwdLocal ? rigF.fwdLocal.clone().applyQuaternion(dq) : null;
       const seg1 = p[1].clone().sub(p[0]), seg2 = p[2].clone().sub(p[1]);
       const ang = (a, b) => a.angleTo(b) * 180 / Math.PI;
       bends[f] = [null, ang(seg1, seg2), dDir ? ang(seg2, dDir) : null];
     }
-    const dbg = (T.retarget._handDbg || {})[side] || null;
-    out.push({
+    const dbg = (T.retarget._handDbg || {})[sideName] || null;
+    return {
       q: [q.x, q.y, q.z, q.w],
       wrist: [wrist.x, wrist.y, wrist.z],
       target: armDbg?.target || null,
       shoulderW: armDbg?.shoulderW || null,
       bends,
       facing: dbg ? dbg.facing : null,
-    });
+    };
+  };
+  const out = [];
+  for (const fr of frames) {
+    const results = T.toResults(fr.payload);
+    for (let k = 0; k < K; k++) T.applyResults(results);
+    vrm.scene.updateMatrixWorld(true);
+    const main = measureSide(side);
+    const other = measureSide(side === 'Right' ? 'Left' : 'Right');
+    out.push({ ...main, sides: { [side]: main, [side === 'Right' ? 'Left' : 'Right']: other } });
   }
   return out;
 };
@@ -163,6 +171,31 @@ function scoreArm(name, frames, meas) {
   };
 }
 
+function scoreDuo(name, frames, meas, window_) {
+  const [a, b] = window_;
+  const dist3 = (p, q2) => Math.hypot(p[0] - q2[0], p[1] - q2[1], p[2] - q2[2]);
+  const sw = meas.find(m => m.sides.Right.shoulderW)?.sides.Right.shoulderW || 0.25;
+  const L = (i) => meas[i].sides.Left, R = (i) => meas[i].sides.Right;
+  // Dropped/held side (Left): must HOLD position + finger pose through the window.
+  const ref = L(a - 1).wrist;
+  let maxDrop = 0;
+  for (let i = a; i <= Math.min(b + 2, meas.length - 1); i++) maxDrop = Math.max(maxDrop, dist3(L(i).wrist, ref) / sw);
+  const bendAt = (i) => L(i).bends.Index?.[1] ?? 0;
+  const fingerDrift = Math.abs(bendAt(b) - bendAt(a - 1));
+  let reacquire = 0;
+  for (let i = b + 1; i <= Math.min(b + 6, meas.length - 1); i++) reacquire = Math.max(reacquire, dist3(L(i).wrist, L(i - 1).wrist) / sw);
+  // The still-tracked side (Right) must keep following its target throughout.
+  const rDists = meas.filter(m => m.sides.Right.target).map(m => dist3(m.sides.Right.wrist, m.sides.Right.target) / sw).sort((x, y) => x - y);
+  const rightTrack = rDists[Math.floor(rDists.length / 2)] ?? Infinity;
+  return {
+    name, kind: 'duo',
+    maxDrop: +maxDrop.toFixed(3), fingerDrift: +fingerDrift.toFixed(1),
+    reacquire: +reacquire.toFixed(3), rightTrack: +rightTrack.toFixed(3),
+    pass: maxDrop < PASS.duoMaxDrop && fingerDrift < PASS.duoFingerDrift
+      && reacquire < PASS.duoReacquire && rightTrack < PASS.armReach,
+  };
+}
+
 async function main() {
   const jsonOut = process.argv.includes('--json')
     ? process.argv[process.argv.indexOf('--json') + 1] : null;
@@ -187,9 +220,11 @@ async function main() {
       // Fresh page per scenario: resets retarget streaks/facing state + bone pose.
       await page.goto(`http://localhost:${PORT}/versions/v2-tasks-worker/?replay=1`, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => window.__sgslTest && window.__sgslTest.avatar?.loaded === true, null, { timeout: 90000 });
-      const meas = await page.evaluate(MEASURE, { frames: sc.frames, side: sc.side, K });
+      // duo scenarios test frame-count-based dynamics (streak decay, holds) -> K=1.
+      const meas = await page.evaluate(MEASURE, { frames: sc.frames, side: sc.side, K: sc.kind === 'duo' ? 1 : K });
       const score = sc.kind === 'orient' ? scoreOrient(sc.name, sc.frames, meas)
         : sc.kind === 'shape' ? scoreShape(sc.name, sc.frames, meas)
+        : sc.kind === 'duo' ? scoreDuo(sc.name, sc.frames, meas, sc.window)
         : scoreArm(sc.name, sc.frames, meas);
       score.facingChanges = meas.reduce((n, m, i) => n + (i > 0 && m.facing !== meas[i - 1].facing ? 1 : 0), 0);
       results.push(score);

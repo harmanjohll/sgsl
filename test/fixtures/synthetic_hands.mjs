@@ -128,6 +128,23 @@ function frame(worldPts, { label = 'Right', target2D = { x: 0.38, y: 0.45 }, occ
   };
 }
 
+// Two-hand frame: independent geometry/label/2D target per hand — for the
+// hands-interacting scenarios (dropout / merged-blob / recovery). `hands` entries
+// may be omitted (null) to simulate MediaPipe dropping a detection mid-contact.
+function duoFrame(specs, { occludeShoulder = null } = {}) {
+  const hands = [];
+  const poseOpts = { occludeShoulder };
+  let gtBends = {};
+  for (const spec of specs) {
+    if (!spec) continue;
+    const { pts, label, target2D } = spec;
+    hands.push({ categoryName: label, landmarks: imageHand(pts, target2D), worldLandmarks: pts.map(([x, y, z]) => ({ x, y, z })) });
+    if (label === 'Right') poseOpts.wristR = target2D; else poseOpts.wristL = target2D;
+    gtBends[label] = bendsFromLandmarks(pts);
+  }
+  return { payload: { pose: makePose(poseOpts), poseWorld: null, face: null, hands }, gt: { quat: [0, 0, 0, 1], bends: gtBends } };
+}
+
 // ── scenarios ───────────────────────────────────────────────────────────────
 const FIST = { Index: [70, 85, 60], Middle: [70, 85, 60], Ring: [70, 85, 60], Pinky: [70, 85, 60] };
 const VEE = { Ring: [70, 85, 60], Pinky: [70, 85, 60] };
@@ -173,6 +190,36 @@ export function buildScenarios() {
   S.push({ name: 'cross-clean', side: 'Right', kind: 'arm', frames: crossFrames() });
   S.push({ name: 'cross-occlusion', side: 'Right', kind: 'arm', frames: crossFrames((i) => (i >= 20 && i <= 26 ? { occludeShoulder: 11 } : {})) });
   S.push({ name: 'cross-labelflip', side: 'Right', kind: 'arm', frames: crossFrames((i) => (i >= 22 && i <= 27 ? { label: 'Left' } : {})) });
+
+  // ── Two-hands-interacting scenarios (the hands-together failure mode) ────────
+  // Right hand flat, LEFT hand a FIST (so finger relaxation during a dropout is a
+  // big measurable signal: PIP 85° → rest ≈ 0°). Hands approach (0..17), are in
+  // contact (18..25), separate (26..39).
+  const fistL = mirrorToLeft(canonicalRightHand(FIST));
+  const duoSpec = (i, { dropLeft = false, merged = false } = {}) => {
+    const t = Math.min(i / 17, 1);                      // approach progress
+    const sep = Math.max(0, (i - 25) / 14);             // separation progress
+    const rx = 0.38 + 0.10 * t - 0.10 * sep;
+    const lx = 0.62 - 0.10 * t + 0.10 * sep;
+    const y = 0.45;
+    const R = { pts: flatR, label: 'Right', target2D: { x: rx, y } };
+    const L = { pts: fistL, label: 'Left', target2D: { x: lx, y } };
+    if (merged) {
+      // One blob detection between the two wrists, labeled Right (a real MediaPipe
+      // failure when hands overlap): geometry = the right hand at the midpoint.
+      return [{ pts: flatR, label: 'Right', target2D: { x: (rx + lx) / 2, y } }];
+    }
+    return dropLeft ? [R] : [R, L];
+  };
+  const duo = (name, mut) => {
+    const frames = [];
+    for (let i = 0; i <= 39; i++) frames.push(duoFrame(duoSpec(i, mut ? mut(i) : {})));
+    // window: the contact frames where the failure is injected + measured
+    S.push({ name, side: 'Right', kind: 'duo', window: [18, 25], frames });
+  };
+  duo('duo-approach');                                                   // clean contact
+  duo('duo-dropout', (i) => (i >= 18 && i <= 25 ? { dropLeft: true } : {}));
+  duo('duo-merged', (i) => (i >= 18 && i <= 25 ? { merged: true } : {}));
 
   return S;
 }
