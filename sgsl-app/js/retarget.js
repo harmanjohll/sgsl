@@ -69,15 +69,21 @@ const HAND_WX = -1, HAND_WY = -1, HAND_WZ = -1;
 // rest palm axis (computed in un-reflected avatar space).
 const HAND_DET = HAND_WX * HAND_WY * HAND_WZ;
 const HAND_LERP = 0.5;       // per-frame slerp for hand/finger bones
-// Wrist: the 2D arm-IK pins the forearm onto a fixed forward plane (BOX_DEPTH), so it
-// disagrees with the reliable 3D hand and the wrist pinches at the seam. Instead of
-// bending the HAND toward that bad forearm (the old WRIST_STRAIGHTEN, which corrupted the
-// trusted hand orientation), re-aim the FOREARM to follow the real hand — fingerDir is a
-// better forearm-depth estimate than the plane guess — so the wrist stays straight while
-// the hand keeps its true orientation. STRAIGHT_GAIN: 1 = forearm fully follows the hand;
-// <1 leaves a slight natural bend. WRIST_SWING_CAP bounds the swing from the IK dir
-// (bad-depth-frame guard). Validated offline: tools/hand_fk_preview.mjs (FIX column).
-const STRAIGHT_GAIN = 1.0;
+// Wrist: the hand's world orientation is trusted (3D landmarks), but slaving the forearm
+// 1:1 to it (the old STRAIGHT_GAIN=1.0 behaviour) meant the arm-IK NEVER placed the wrist
+// at the tracked 2D target — the posed wrist sat up to a forearm length from the landmark
+// dot (measured: median 0.82 shoulder-widths in test/fidelity_run.mjs cross sweeps), and
+// one bad orientation frame swung the whole forearm unbounded. Now the forearm aims at the
+// IK's own elbow→target direction (wrist lands ON the dot — the IK chose the elbow so
+// |E−T| = L2), the hand keeps its true world orientation, and the difference shows as an
+// anatomical wrist bend:
+//   STRAIGHT_GAIN    — fraction of the hand-vs-IK angle the FOREARM leans toward the hand
+//                      (small: position fidelity wins; the wrist joint carries the rest).
+//   WRIST_BEND_MAX   — max bend carried at the wrist joint; beyond it the forearm concedes
+//                      position (matches the WRIST_MAX deform-guard limit so they don't fight).
+//   WRIST_SWING_CAP  — absolute bound on the forearm's swing away from the IK direction
+//                      (bad-frame guard, e.g. a garbage hand orientation).
+const STRAIGHT_GAIN = 0.10;
 const WRIST_SWING_CAP = 80 * Math.PI / 180;
 // Manual palm-rotation calibration. The hand is rolled about the forearm (fingerDir)
 // axis by a USER-SET angle (default 180°). 180° == negating palmNormal: it flips both the
@@ -156,7 +162,10 @@ export class SMPLXRetarget {
       // flip-parity fix the negation is gone, so the equivalent look is -170+180 = +10.
       // (Saved user settings are migrated the same way in recorder.js / v2 app.js.)
       orientCalib: { rollDeg: 10, pitchDeg: 10, yawDeg: 25 },
-      curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25, thumbCurl: 0.70, thumbSpread: 0.80,
+      // Gains were eye-tuned (0.70/0.80) while orientation bugs distorted the hand; on
+      // ground-truth landmarks the direct-aim math reproduces bends exactly at 1.0
+      // (test/fidelity_run.mjs shape scenarios). Sliders remain for per-user taste.
+      curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25, thumbCurl: 1.00, thumbSpread: 1.00,
       reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
       guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
     };
@@ -455,6 +464,30 @@ export class SMPLXRetarget {
     let wristBend = 0;
     if (lowerArm && lowerArm.parent && armRig && armRig.handBindLocal) {
       const qLowerWorld = qHandWorld.clone().multiply(armRig.handBindLocal.clone().invert());
+      // Split the hand-vs-IK disagreement between forearm swing and wrist bend, position-first:
+      // aim the forearm at the IK's own elbow→target direction (wrist lands ON the tracked dot),
+      // lean it STRAIGHT_GAIN of the way back toward the hand direction for a natural look, let
+      // the wrist joint carry the rest up to WRIST_BEND_MAX, and only concede position beyond
+      // that. Twist (pronation) still propagates to the forearm — the swing rotation is applied
+      // about cross(dHand,dIK), which preserves the roll component of qLowerWorld.
+      const dbgIK = this._armDbg?.[side];
+      if (dbgIK && dbgIK.dc === this._dc && armRig.lowerRestAxis) {
+        const elbowW = lowerArm.getWorldPosition(new THREE.Vector3());
+        const dIK = new THREE.Vector3(dbgIK.target[0], dbgIK.target[1], dbgIK.target[2]).sub(elbowW);
+        const dHand = armRig.lowerRestAxis.clone().applyQuaternion(qLowerWorld);
+        if (dIK.lengthSq() > 1e-9 && dHand.lengthSq() > 1e-9) {
+          dIK.normalize(); dHand.normalize();
+          const ang = Math.acos(clampNum(dHand.dot(dIK), -1, 1));
+          const bendMax = WRIST_MAX; // stay inside the wrist deform-guard limit
+          const swingFromIK = Math.min(ang * STRAIGHT_GAIN + Math.max(0, ang * (1 - STRAIGHT_GAIN) - bendMax), WRIST_SWING_CAP);
+          const axis = new THREE.Vector3().crossVectors(dHand, dIK);
+          if (axis.lengthSq() > 1e-9) {
+            // Rotate the hand-slaved forearm from dHand all the way to dIK, minus the swing we
+            // intentionally leave toward the hand.
+            qLowerWorld.premultiply(new THREE.Quaternion().setFromAxisAngle(axis.normalize(), Math.max(0, ang - swingFromIK)));
+          }
+        }
+      }
       const pInv = lowerArm.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
       lowerArm.quaternion.slerp(pInv.multiply(qLowerWorld), this._armLerp);
       lowerArm.updateWorldMatrix(true, true); // refresh the Hand (child) world transform too
@@ -634,9 +667,9 @@ export class SMPLXRetarget {
       );
     }
 
-    // Diagnostic: the IK's own target, so the fidelity harness can measure how far
-    // the posed wrist actually lands from it (|wrist−T| = the "reaches the dot" score).
-    (this._armDbg ||= {})[side] = { target: [T.x, T.y, T.z], shoulderW: avShoulderW };
+    // The IK's own target: consumed by _driveHand's forearm split (fresh-frame check via
+    // dc) and by the fidelity harness (|wrist−T| = the "reaches the dot" score).
+    (this._armDbg ||= {})[side] = { target: [T.x, T.y, T.z], shoulderW: avShoulderW, dc: this._dc };
 
     const S = (side === "Right" ? Rs : Ls).clone();
     const { L1, L2, upperRestAxis, lowerRestAxis } = rig;

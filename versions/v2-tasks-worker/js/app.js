@@ -232,7 +232,7 @@ function download(data, name, type) {
 const CALIB_KEY = 'sgsl.v2.calib.v1';
 const DEFAULTS = {
   rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
-  curlGain: 0.70, spreadGain: 0.80, smoothing: 0.75,
+  curlGain: 1.00, spreadGain: 1.00, smoothing: 0.75,
 };
 let side = 'Right';
 let calib = { Right: { ...DEFAULTS }, Left: { ...DEFAULTS } };
