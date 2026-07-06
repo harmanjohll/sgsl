@@ -14,6 +14,7 @@
 
 import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
+import { HandRouter } from './hand-router.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
@@ -202,16 +203,21 @@ async function loadHandLandmarker() {
 // to a signer side by handedness, providing both image landmarks (arm target +
 // gating) and 3D world landmarks (palm/curl). Overrides Holistic's weaker hands;
 // if HandLandmarker has no detection this frame, Holistic's hands remain.
+// Temporal continuity (shared hand-router.js): raw per-frame handedness labels flip
+// while hands cross, which swapped the avatar's arms violently — the router keeps a
+// detection on its side by wrist proximity and only re-routes on a sustained relabel.
+const handRouter = new HandRouter();
 function mergeHandLandmarker(results, hr) {
   if (!hr || !hr.landmarks || !hr.landmarks.length) return;
+  const dets = [];
   for (let i = 0; i < hr.landmarks.length; i++) {
     let side = hr.handedness?.[i]?.[0]?.categoryName || (i === 0 ? 'Right' : 'Left');
     if (SWAP_HANDEDNESS) side = side === 'Right' ? 'Left' : 'Right';
-    const lm = hr.landmarks[i];
-    const world = hr.worldLandmarks?.[i] || null;
-    if (side === 'Right') { results.rightHandLandmarks = lm; results.rightHandWorldLandmarks = world; }
-    else { results.leftHandLandmarks = lm; results.leftHandWorldLandmarks = world; }
+    dets.push({ categoryName: side, landmarks: hr.landmarks[i], worldLandmarks: hr.worldLandmarks?.[i] || null });
   }
+  const routed = handRouter.route(dets);
+  if (routed.Right) { results.rightHandLandmarks = routed.Right.landmarks; results.rightHandWorldLandmarks = routed.Right.worldLandmarks; }
+  if (routed.Left) { results.leftHandLandmarks = routed.Left.landmarks; results.leftHandWorldLandmarks = routed.Left.worldLandmarks; }
 }
 
 // ── Debug: compact world-hand-landmark dump for offline tuning ──────────────
