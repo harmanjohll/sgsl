@@ -17,6 +17,7 @@ import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { AutoCut, trimFrames } from './autocut.js';
 import { toResults } from './tasks-adapter.js';
+import { solveOrientationOffset } from './autotune.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
@@ -81,6 +82,17 @@ try { autoCutEnabled = localStorage.getItem(AUTOCUT_KEY) !== '0'; } catch { /* d
 let autoCutter = null;          // live AutoCut instance while recording
 let autoCutCountdown = null;    // ms until auto-stop (for the timer display)
 let autoCutDidTrim = false;
+
+// Auto body-calibration: when no baseline exists yet, quietly collect good pose frames
+// and set it automatically (median over ~40 frames, ~1.5s) — the Calibrate button becomes
+// optional (still available to re-do deliberately).
+const autoBodyCal = { samples: [], done: false };
+
+// Guided hand auto-tune: solve the 3-DOF orientation calibration per hand from the raw
+// measured basis while the signer holds a flat palm to the camera (see autotune.js).
+const AUTOTUNE_SAMPLES = 30;
+let autoTune = null;   // { side: 'Right'|'Left', samples: [] } while active
+let refreshCalibUI = null;   // set by wireCalibControls; re-syncs sliders to calibSettings
 
 let calibSide = 'Right';   // which hand the calibration sliders currently edit
 let calibSettings = { Right: calibDefaultsFor('Right'), Left: calibDefaultsFor('Left') };
@@ -149,6 +161,16 @@ export async function init() {
   loadCalibSettings();
   applyCalibSettings();
   wireCalibControls();
+
+  // Advanced disclosures: remember open/closed across sessions.
+  for (const id of ['advanced-panel', 'advanced-console']) {
+    const d = document.getElementById(id);
+    if (!d) continue;
+    try { d.open = localStorage.getItem(`sgsl.adv.${id}`) === '1'; } catch { /* closed */ }
+    d.addEventListener('toggle', () => {
+      try { localStorage.setItem(`sgsl.adv.${id}`, d.open ? '1' : '0'); } catch { /* private */ }
+    });
+  }
 
   const imp = document.getElementById('rec-import');
   if (imp) imp.addEventListener('change', importRecording);
@@ -423,12 +445,13 @@ function addHandDumpButton() {
   if (document.getElementById('btn-hand-dump')) return;
   const btn = document.createElement('button');
   btn.id = 'btn-hand-dump';
+  btn.className = 'btn';
   btn.textContent = '⬇ Loading hand model…';
   btn.disabled = true;
-  btn.style.cssText = 'position:fixed;left:16px;bottom:56px;z-index:9999;padding:9px 13px;'
-    + 'background:#6b7280;color:#fff;border:none;border-radius:7px;font:600 13px Inter,sans-serif;cursor:not-allowed;box-shadow:0 2px 8px rgba(0,0,0,.3)';
   btn.addEventListener('click', startHandDump);
-  document.body.appendChild(btn);
+  // Lives with the other diagnostics inside the Advanced panel (was a floating overlay).
+  const row = document.querySelector('#advanced-panel .rec-btn-row') || document.body;
+  row.appendChild(btn);
   updateDumpButton();
 }
 
@@ -477,6 +500,9 @@ function onHolisticResults(results) {
   }
   const dbg = document.getElementById('rec-debug');
   if (dbg && retarget._lastDebug) dbg.textContent = retarget._lastDebug;
+
+  maybeAutoBodyCalibrate(results);
+  maybeAutoTune(results);
 
   // 4) Capture: record frame or calibration sample.
   const frame = extractFrame(results);
@@ -567,6 +593,73 @@ function startCalibration() {
   calibrating = true;
   setRecStatus('Calibrating — hold still with arms at sides...', 'loading');
   setTimeout(() => finishCalibration(), CALIB_MS);
+}
+
+// Median-based silent body calibration (only until a baseline exists; the explicit
+// Calibrate button overwrites it with a deliberate arms-at-sides capture).
+function maybeAutoBodyCalibrate(results) {
+  if (calibBaseline || calibrating || autoBodyCal.done) return;
+  const p = results.poseLandmarks, L = p?.[11], R = p?.[12], N = p?.[0];
+  if (!L || !R || !N || (L.visibility ?? 1) < 0.5 || (R.visibility ?? 1) < 0.5) return;
+  const mx = (L.x + R.x) / 2, my = (L.y + R.y) / 2;
+  autoBodyCal.samples.push([Math.hypot(L.x - R.x, L.y - R.y), Math.hypot(mx - N.x, my - N.y), mx, my]);
+  if (autoBodyCal.samples.length < 40) return;
+  const med = (i) => autoBodyCal.samples.map((v) => v[i]).sort((a, b) => a - b)[Math.floor(autoBodyCal.samples.length / 2)];
+  calibBaseline = {
+    shoulderWidth: med(0), headToShoulder: med(1), shoulderMid: [med(2), med(3)],
+    frames: autoBodyCal.samples.length, capturedAt: new Date().toISOString(), auto: true,
+  };
+  autoBodyCal.done = true;
+  retarget?.setCalibration?.({ shoulderMid: calibBaseline.shoulderMid, shoulderWidth: calibBaseline.shoulderWidth });
+  updateFramingGate(latestFraming);   // re-evaluates the Record button gate
+  setRecStatus('Auto-calibrated from your pose — you can Record. (Use Calibrate to redo it deliberately.)', 'info');
+}
+
+// Guided per-hand orientation solve: collect raw bases while the pose is held flat +
+// confident, then set the roll/pitch/yaw sliders mathematically.
+function maybeAutoTune(results) {
+  if (!autoTune) return;
+  const side = autoTune.side;
+  const world = side === 'Right' ? results.rightHandWorldLandmarks : results.leftHandWorldLandmarks;
+  const dbg = retarget?._handDbg?.[side];
+  const raw = retarget?._rawBasis?.[side];
+  // Sample only clean canonical frames: confident winding (not edge-on) + flat hand.
+  if (world?.length >= 21 && raw && dbg && Math.abs(dbg.wind) > 0.35 && dbg.curl < 25) {
+    autoTune.samples.push(raw);
+    if (autoTune.samples.length % 10 === 0 && autoTune.samples.length < AUTOTUNE_SAMPLES) {
+      setRecStatus(`Auto-tune (${side}): capturing… ${autoTune.samples.length}/${AUTOTUNE_SAMPLES}. Hold steady.`, 'loading');
+    }
+  }
+  if (autoTune.samples.length < AUTOTUNE_SAMPLES) return;
+
+  const solved = solveOrientationOffset(autoTune.samples);
+  if (solved.spreadDeg > 25) {
+    // Hand wasn't steady — retry this side rather than bake a bad calibration.
+    autoTune.samples = [];
+    setRecStatus(`Auto-tune (${side}): the hand moved too much (±${Math.round(solved.spreadDeg)}°) — hold it steadier, flat to the camera.`, 'error');
+    return;
+  }
+  const clampDeg = (v, lim) => Math.max(-lim, Math.min(lim, Math.round(v / 5) * 5));
+  calibSettings[side] = {
+    ...calibSettings[side],
+    rollDeg: clampDeg(solved.rollDeg, 180),
+    pitchDeg: clampDeg(solved.pitchDeg, 90),
+    yawDeg: clampDeg(solved.yawDeg, 90),
+  };
+  applyCalibSettings(); saveCalibSettings(); refreshCalibUI?.();
+  if (side === 'Right') {
+    autoTune = { side: 'Left', samples: [] };
+    setRecStatus(`Right hand tuned (roll ${calibSettings.Right.rollDeg}° pitch ${calibSettings.Right.pitchDeg}° yaw ${calibSettings.Right.yawDeg}°). Now your LEFT hand: flat palm to the camera, fingers up.`, 'success');
+  } else {
+    autoTune = null;
+    syncAutoTuneBtn();
+    setRecStatus(`Both hands auto-tuned. If anything looks off, Reset calibration or re-run Auto-tune.`, 'success');
+  }
+}
+
+function syncAutoTuneBtn() {
+  const b = document.getElementById('btn-autotune');
+  if (b) b.textContent = autoTune ? '✨ Auto-tune: cancel' : '✨ Auto-tune hands';
 }
 
 function finishCalibration() {
@@ -1135,6 +1228,15 @@ function wireCalibControls() {
     syncs.forEach((s) => s());
     applyCalibSettings(); saveCalibSettings();
     setRecStatus(`${calibSide} hand calibration reset to defaults.`, 'info');
+  });
+  refreshCalibUI = () => syncs.forEach((s) => s());
+  document.getElementById('btn-autotune')?.addEventListener('click', () => {
+    if (autoTune) { autoTune = null; setRecStatus('Auto-tune cancelled.', 'info'); }
+    else {
+      autoTune = { side: 'Right', samples: [] };
+      setRecStatus('Auto-tune: hold your RIGHT hand FLAT, palm facing the camera, fingers up.', 'loading');
+    }
+    syncAutoTuneBtn();
   });
   document.getElementById('btn-screenshot')?.addEventListener('click', captureScreenshot);
 }
