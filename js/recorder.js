@@ -15,6 +15,7 @@
 import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
+import { AutoCut, trimFrames } from './autocut.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
@@ -64,6 +65,15 @@ const CALIB_DEFAULTS = {
 const calibDefaultsFor = (side) => side === 'Left'
   ? { ...CALIB_DEFAULTS, rollDeg: -CALIB_DEFAULTS.rollDeg, yawDeg: -CALIB_DEFAULTS.yawDeg, thumbDeg: -CALIB_DEFAULTS.thumbDeg }
   : { ...CALIB_DEFAULTS };
+// Auto-cut: end the recording automatically when the sign is done (motion drops +
+// signer returns to rest), and trim leading/trailing idle. See autocut.js.
+const AUTOCUT_KEY = 'sgsl.autocut.v1';
+let autoCutEnabled = true;
+try { autoCutEnabled = localStorage.getItem(AUTOCUT_KEY) !== '0'; } catch { /* default on */ }
+let autoCutter = null;          // live AutoCut instance while recording
+let autoCutCountdown = null;    // ms until auto-stop (for the timer display)
+let autoCutDidTrim = false;
+
 let calibSide = 'Right';   // which hand the calibration sliders currently edit
 let calibSettings = { Right: calibDefaultsFor('Right'), Left: calibDefaultsFor('Left') };
 
@@ -101,6 +111,19 @@ export async function init() {
   document.getElementById('btn-rec-export')?.addEventListener('click', exportRecording);
   document.getElementById('btn-rec-discard')?.addEventListener('click', discardRecording);
   document.getElementById('btn-calibrate')?.addEventListener('click', startCalibration);
+
+  const acBtn = document.getElementById('btn-autocut');
+  const refreshAc = () => { if (acBtn) acBtn.textContent = `Auto-cut: ${autoCutEnabled ? 'On' : 'Off'}`; };
+  if (acBtn) {
+    acBtn.addEventListener('click', () => {
+      autoCutEnabled = !autoCutEnabled;
+      try { localStorage.setItem(AUTOCUT_KEY, autoCutEnabled ? '1' : '0'); } catch { /* private mode */ }
+      if (!autoCutEnabled) { autoCutter = null; autoCutCountdown = null; }
+      else if (recording) autoCutter = new AutoCut();
+      refreshAc();
+    });
+    refreshAc();
+  }
 
   const tol = document.getElementById('tolerance-slider');
   const tolLabel = document.getElementById('tolerance-label');
@@ -389,6 +412,11 @@ function onHolisticResults(results) {
     frame.t = performance.now() - startTime;
     frame.metrics = snapshotMetrics();   // per-frame orientation metrics (accuracy dataset)
     frames.push(frame);
+    if (autoCutter) {
+      const v = autoCutter.update(frame);
+      autoCutCountdown = v.countdownMs;
+      if (v.shouldStop) stopRecording();
+    }
   }
 }
 
@@ -695,6 +723,8 @@ function startRecording() {
   recording = true;
   startTime = performance.now();
   retarget.reset();
+  autoCutter = autoCutEnabled ? new AutoCut() : null;
+  autoCutCountdown = null;
 
   document.getElementById('btn-rec-start').disabled = true;
   document.getElementById('btn-rec-stop').disabled = false;
@@ -703,7 +733,8 @@ function startRecording() {
   const timerEl = document.getElementById('rec-timer');
   timerInterval = setInterval(() => {
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-    if (timerEl) timerEl.textContent = `${elapsed}s (${frames.length} frames)`;
+    const cut = autoCutCountdown != null ? ` · auto-stop in ${(autoCutCountdown / 1000).toFixed(1)}s` : (autoCutter ? ' · auto-cut armed' : '');
+    if (timerEl) timerEl.textContent = `${elapsed}s (${frames.length} frames)${cut}`;
   }, 100);
 
   setRecStatus(`Recording "${label}"... Perform the sign now.`, 'loading');
@@ -712,6 +743,14 @@ function startRecording() {
 function stopRecording() {
   recording = false;
   clearInterval(timerInterval);
+  // Auto-cut trim: drop leading/trailing idle (keeps >=5 frames or returns untouched).
+  if (autoCutter) {
+    const trimmed = trimFrames(frames);
+    autoCutDidTrim = trimmed !== frames;
+    if (autoCutDidTrim) frames = trimmed;
+    autoCutter = null;
+    autoCutCountdown = null;
+  }
 
   document.getElementById('btn-rec-start').disabled = false;
   document.getElementById('btn-rec-stop').disabled = true;
@@ -722,6 +761,7 @@ function stopRecording() {
   }
 
   lastQuality = QualityGate.analyze(frames);
+  if (autoCutDidTrim) setRecStatus('Auto-cut: trimmed to the sign. Review below.', 'success');
   showQualityResults(lastQuality);
 
   // Objective replay-fidelity number (how faithfully the engine can
