@@ -52,8 +52,8 @@ const CALIB_KEY = 'sgsl.calib.v1';
 const CALIB_DEFAULTS = {
   rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
   deformGuard: true,                                 // anatomical clamps (anti-deformation)
-  curlGain: 0.70, spreadGain: 0.80, thumbDeg: 25,    // fingers
-  thumbCurl: 0.70, thumbSpread: 0.80,                // thumb (decoupled from fingers)
+  curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25,    // fingers
+  thumbCurl: 1.00, thumbSpread: 1.00,                // thumb (decoupled from fingers)
   reachDepth: 0.90, reachGain: 1.00,                 // reach
   guardStrictness: 1,                                // deformation-guard strength
   smoothing: 0.75,                                   // stability
