@@ -840,6 +840,11 @@ function renderPreviewFrame(frame) {
     faceLandmarks: toMP(frame.face),
     rightHandLandmarks: toMP(frame.rightHand),
     leftHandLandmarks: toMP(frame.leftHand),
+    // Recorded 3D world hands were silently DROPPED here, so replay/preview drove the
+    // legacy Kalidokit path instead of _driveHand — playback didn't match live. Old
+    // records without world hands still fall back exactly as before.
+    rightHandWorldLandmarks: toMP(frame.rightHandWorld),
+    leftHandWorldLandmarks: toMP(frame.leftHandWorld),
   });
 }
 
