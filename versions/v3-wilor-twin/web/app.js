@@ -25,7 +25,7 @@
 
 import { SMPLXAvatar } from '../../../sgsl-app/js/avatar.js';
 import { SMPLXRetarget } from '../../../sgsl-app/js/retarget.js';
-import { toResults } from '../../v2-tasks-worker/js/adapter.js';
+import { toResults } from '../../../sgsl-app/js/tasks-adapter.js';
 
 const WS_URL = 'ws://localhost:8765/ws';   // set to your GPU droplet when ready
 
@@ -44,7 +44,7 @@ retarget.setAvatar(avatar);
 
 // ── In-browser tracking (v2 worker) ────────────────────────────────────────
 // Classic worker (see v2 app.js): MediaPipe needs importScripts(), forbidden in module workers.
-const worker = new Worker(new URL('../../v2-tasks-worker/js/track-worker.js', import.meta.url));
+const worker = new Worker(new URL('../../../sgsl-app/js/track-worker.js', import.meta.url));
 let workerReady = false, inFlight = false, tsCtr = 0;
 
 // ── WiLoR server (deferred GPU) ────────────────────────────────────────────

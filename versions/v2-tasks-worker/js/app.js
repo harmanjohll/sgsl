@@ -41,7 +41,7 @@ retarget.setAvatar(avatar);
 // Classic worker (NOT { type: 'module' }): MediaPipe Tasks-Vision calls importScripts()
 // internally, which module workers forbid. Classic workers allow it, and Chromium still
 // permits the dynamic import() we use inside the worker.
-const worker = REPLAY_MODE ? null : new Worker(new URL('./track-worker.js', import.meta.url));
+const worker = REPLAY_MODE ? null : new Worker(new URL('../../../sgsl-app/js/track-worker.js', import.meta.url));
 let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
 let workerNote = '';    // last worker status (kept visible above the HUD)
