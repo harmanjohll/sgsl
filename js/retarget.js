@@ -615,12 +615,26 @@ export class SMPLXRetarget {
     if (this._calib) return this._calib;
     const L = pose2D?.[11], R = pose2D?.[12];
     if (L && R && (L.visibility ?? 1) > 0.3 && (R.visibility ?? 1) > 0.3) {
-      return {
+      const raw = {
         x: (L.x + R.x) / 2,
         y: (L.y + R.y) / 2,
         scale: Math.hypot(L.x - R.x, L.y - R.y) || 0.2,
       };
+      // EMA-smooth the live anchor: relX/relY are DIVIDED by anchor.scale, so raw
+      // per-frame shoulder jitter (and torso-yaw foreshortening while reaching across)
+      // was amplified straight into both arm targets. 0.15/frame ≈ 300 ms at track rate.
+      const e = this._anchorEma;
+      this._anchorEma = e ? {
+        x: e.x + (raw.x - e.x) * 0.15,
+        y: e.y + (raw.y - e.y) * 0.15,
+        scale: e.scale + (raw.scale - e.scale) * 0.15,
+      } : raw;
+      return this._anchorEma;
     }
+    // Shoulder dropout (typically the crossing hand occluding one): HOLD the last good
+    // anchor instead of snapping to the nose fallback, whose hardcoded 0.22 scale
+    // re-scaled every target by ~1.6× mid-sign (the cross-occlusion wrist lurch).
+    if (this._anchorEma) return this._anchorEma;
     const nose = pose2D?.[0];
     if (nose) return { x: nose.x, y: nose.y + 0.18, scale: 0.22 };
     return null;
@@ -653,10 +667,18 @@ export class SMPLXRetarget {
       // shoulders. Framing-invariant. Image y is down, so invert for world up.
       const relX = (screen.x - anchor.x) / anchor.scale;
       const relY = (screen.y - anchor.y) / anchor.scale;
+      // Across-body targets sit NEAR the chest in reality (the hand comes in, not out),
+      // but the fixed signing-plane depth saturated the reach — the arm went stiff-
+      // straight and the elbow solve's sqrt amplified target jitter near full extension.
+      // Shrink depth as the target crosses the midline toward the far side.
+      const xOffSW = relX * this._reachGain * MIRROR_X;   // shoulder-width units from mid
+      const outSign = Math.sign((side === "Right" ? Rs.x : Ls.x) - mid.x) || (side === "Right" ? 1 : -1);
+      const crossSW = Math.max(0, -xOffSW * outSign);     // how far PAST the midline (far side)
+      const depthScale = clampNum(1 - 0.45 * crossSW, 0.55, 1);
       T = new THREE.Vector3(
-        mid.x + relX * avShoulderW * this._reachGain * MIRROR_X,
+        mid.x + xOffSW * avShoulderW,
         mid.y - relY * avShoulderW * this._reachGain,
-        mid.z + avShoulderW * this._reachDepth * FRONT_Z,
+        mid.z + avShoulderW * this._reachDepth * depthScale * FRONT_Z,
       );
     } else {
       // Absolute fallback (no shoulders/nose): image-centered box.
@@ -674,9 +696,11 @@ export class SMPLXRetarget {
     const S = (side === "Right" ? Rs : Ls).clone();
     const { L1, L2, upperRestAxis, lowerRestAxis } = rig;
 
-    // Planar 2-bone IK (law of cosines).
+    // Planar 2-bone IK (law of cosines). Reach capped at 95% extension: at full
+    // extension h = sqrt(L1²−a²) → 0 with infinite slope, so millimetre target jitter
+    // became centimetre elbow swings; the cap keeps a slight bend and a bounded slope.
     const toT = T.clone().sub(S);
-    const d = clampNum(toT.length(), Math.abs(L1 - L2) + 1e-3, L1 + L2 - 1e-3);
+    const d = clampNum(toT.length(), Math.abs(L1 - L2) + 1e-3, (L1 + L2) * 0.95);
     const axis = toT.lengthSq() > 1e-9 ? toT.clone().normalize() : new THREE.Vector3(0, -1, 0);
     const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
     const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
@@ -770,8 +794,19 @@ export class SMPLXRetarget {
     // (signer raises right hand → results.rightHandLandmarks): MediaPipe pose 16 = the
     // signer's RIGHT wrist, 15 = LEFT. These were crossed (15/16 swapped), so during a
     // hand dropout the arm was yanked toward the signer's OTHER wrist.
-    const rightTargetScreen = rightHandLandmarks?.[0] || pose2DLandmarks?.[16];
-    const leftTargetScreen  = leftHandLandmarks?.[0]  || pose2DLandmarks?.[15];
+    // The pose wrist is also gated on visibility (WRIST_VIS_THRESH — previously a dead
+    // constant): mid-cross occlusion is exactly when the pose model hallucinates, and the
+    // arm used to chase that ghost. Below threshold we hold the LAST GOOD hand target for
+    // the hysteresis window instead of switching to a worse source.
+    const poseWrist = (i) => {
+      const lm = pose2DLandmarks?.[i];
+      return lm && (lm.visibility ?? 1) >= WRIST_VIS_THRESH ? lm : null;
+    };
+    const lastT = (this._lastTarget ||= { Right: null, Left: null });
+    const rightTargetScreen = rightHandLandmarks?.[0] || poseWrist(16) || lastT.Right;
+    const leftTargetScreen  = leftHandLandmarks?.[0]  || poseWrist(15) || lastT.Left;
+    if (rightHandLandmarks?.[0]) lastT.Right = { x: rightHandLandmarks[0].x, y: rightHandLandmarks[0].y };
+    if (leftHandLandmarks?.[0])  lastT.Left  = { x: leftHandLandmarks[0].x,  y: leftHandLandmarks[0].y };
 
     if (this._avatar &&
         ((signerRightArmOn && rightTargetScreen) || (signerLeftArmOn && leftTargetScreen))) {
