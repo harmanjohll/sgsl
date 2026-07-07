@@ -47,5 +47,17 @@ for (const truth of [
   check('sign-flipped average stays put', qAngleDeg(qMul(avg, qConj(q))) < 0.01);
 }
 
+// 4) Side-aware expected basis: a LEFT canonical pose pairs at rotY(180°); solving
+//    against that expectation must return a SMALL correction, not a ~180° roll.
+{
+  const rotY180 = [0, 1, 0, 0];
+  const smallOff = eulerYXZToQuat({ pitchDeg: 8, rollDeg: -12, yawDeg: 15 });
+  const qMeas = qMul(rotY180, qConj(smallOff));   // measured = expected · offset⁻¹
+  const solved = solveOrientationOffset([qMeas, qMeas, qMeas], rotY180);
+  const residual = qAngleDeg(qMul(qMul(qMeas, eulerYXZToQuat(solved)), qConj(rotY180)));
+  check(`left-paired solve residual ${residual.toFixed(2)}° < 0.01`, residual < 0.01);
+  check(`left-paired solve is small (roll ${solved.rollDeg.toFixed(1)}°), not ~180°`, Math.abs(solved.rollDeg) < 135);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

@@ -256,10 +256,9 @@ const DEFAULTS = {
   rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
   curlGain: 1.00, spreadGain: 1.00, smoothing: 0.5,
 };
-// Baseline eye-tuned on the RIGHT hand; LEFT needs the chiral mirror (roll/yaw flipped).
-const defaultsFor = (s2) => s2 === 'Left'
-  ? { ...DEFAULTS, rollDeg: -DEFAULTS.rollDeg, yawDeg: -DEFAULTS.yawDeg }
-  : { ...DEFAULTS };
+// Identical defaults for both sides (the mirrored-Left experiment is reverted — the
+// measured and rig rest bases are chirality-paired per side; see retarget.js WIND_SIGN).
+const defaultsFor = (_s2) => ({ ...DEFAULTS });
 let side = 'Right';
 let calib = { Right: defaultsFor('Right'), Left: defaultsFor('Left') };
 
@@ -277,12 +276,15 @@ function loadCalib() {
           else c.rollDeg = ((c.rollDeg + 360) % 360) - 180;
         }
       }
+      // v3: WIND_SIGN.Left was wrong before this version — left tunings were made
+      // against a 180°-flipped palm. Reset Left to side defaults.
+      if ((raw.v || 1) < 3) raw.Left = defaultsFor('Left');
       calib = { Right: raw.Right, Left: raw.Left }; side = raw.side || 'Right';
     }
   } catch (e) { /* defaults */ }
 }
 function saveCalib() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side, v: 2 })); } catch (e) {}
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side, v: 3 })); } catch (e) {}
 }
 function applyCalib() {
   retarget.setHandTuning('Right', calib.Right);

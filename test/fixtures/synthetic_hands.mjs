@@ -221,5 +221,27 @@ export function buildScenarios() {
   duo('duo-dropout', (i) => (i >= 18 && i <= 25 ? { dropLeft: true } : {}));
   duo('duo-merged', (i) => (i >= 18 && i <= 25 ? { merged: true } : {}));
 
+  // ── ABSOLUTE palm-facing + rendered chirality (the un-foolable pin) ─────────
+  // The rigidity metrics are delta-based, so a CONSTANT 180° facing inversion
+  // passes them. Two absolute assertions close that hole:
+  //   expectFacing — the driven _handDbg facing, in the RIG-PAIRED convention:
+  //     the measured normal and the rig rest palmAxis are both chirality-odd, so
+  //     a correctly-rendered LEFT palm-to-camera reads facing ≈ −1 (not +1).
+  //   expectThumbDx — ANATOMY in world space (convention-free): for a flat palm
+  //     toward the camera, the avatar's RIGHT thumb points to the viewer's right
+  //     (+x), the LEFT thumb to the viewer's left (−x); flipped for palm-away.
+  const away = (pts) => applyQuat(pts, qAxisAngle([0, 1, 0], Math.PI));
+  for (const [name, pts, side, target2D, expectFacing, expectThumbDx] of [
+    ['face-R-toward', flatR, 'Right', { x: 0.38, y: 0.45 }, 1, 1],
+    ['face-R-away', away(flatR), 'Right', { x: 0.38, y: 0.45 }, -1, -1],
+    ['face-L-toward', flatL, 'Left', { x: 0.62, y: 0.45 }, -1, -1],
+    ['face-L-away', away(flatL), 'Left', { x: 0.62, y: 0.45 }, 1, 1],
+  ]) {
+    S.push({
+      name, side, kind: 'facing', expectFacing, expectThumbDx,
+      frames: Array.from({ length: 12 }, () => frame(pts, { label: side, target2D })),
+    });
+  }
+
   return S;
 }

@@ -115,13 +115,20 @@ const FINGER_SEG = { Thumb: [0,1,2,3,4], Index: [0,5,6,7,8], Middle: [0,9,10,11,
 // Palm-facing stabiliser. MediaPipe's monocular depth can flip palm↔back (world
 // z negates, x/y stay), swinging the palm ~180°. The 2D knuckle winding (from
 // the world x/y, which DON'T flip) robustly says palm-toward vs palm-away, so we
-// force the palm normal's facing to match it. WIND_SIGN pinned by REAL captures
-// via tools/hand_replay.mjs. BOTH sides want -1: handdump_6–9 (339 non-edge-on
-// frames, the user's RIGHT hand = retarget side "Left") agree with the raw palm
-// geometry 0% at +1 and ~100% at -1 — at +1 the override fired 82–99% of frames,
-// forcing the palm ~180° off (the reported left-wrist twist). Side "Right" was
-// already pinned to -1 by handdump_4/5. The earlier +1 for "Left" was assumed
-// good but never validated until these right-hand dumps arrived.
+// force the palm normal's facing to match it.
+// WHY BOTH SIDES ARE -1 (rig-paired convention — measured, do not "fix" again):
+// the measured palm normal (cross(fingerDir, little−index)·det) and the avatar
+// rig's rest palmAxis (avatar.js _measureHandRig, same cross formula on the
+// avatar's own bones) are BOTH chirality-odd. For the LEFT hand both flip
+// together, so they stay PAIRED: a correctly-rendered left palm-to-camera has
+// dbg facing ≈ −1 by convention (NOT +1 — the debug value is rig-paired, not
+// anatomical). The winding also flips for left (chirality-odd), and the desired
+// rig-paired facing flips too — the two negations cancel, so WIND_SIGN is the
+// SAME sign for both sides. Verified by RENDERED anatomy in the harness
+// (face-* scenarios assert the avatar's thumb side in world space): with -1 the
+// left thumb points the correct way (thumbDx −0.093); with +1 the left hand
+// rolls ~180° wrong. The 2026-07 left-hand complaints were the mirrored-default
+// regression (see _defaultCalib), not this constant.
 const WIND_SIGN = { Left: -1, Right: -1 };
 const WIND_THRESH = 0.3;     // |normalized winding| below this = hold last (edge-on)
 
@@ -165,11 +172,12 @@ export class SMPLXRetarget {
   /** A fresh per-side calibration set (the shipped baseline). smoothing 0 = crisp playback;
    *  the recorder applies the live smoothing per side via setHandTuning. */
   _defaultCalib(side = 'Right') {
-    // Baseline eye-tuned on the signer's RIGHT hand. A correction rotation for one hand
-    // maps to its MIRROR on the other (conjugation by the across-axis reflection): pitch
-    // (X) keeps its sign, roll (Y), yaw (Z) and the thumb swing negate. Seeding both sides
-    // identical left a constant ~50° wrist error on the non-tuned hand.
-    const m = side === 'Left' ? -1 : 1;
+    // IDENTICAL for both sides — measured, not assumed. The measured hand basis and the
+    // avatar rig's rest basis are built with the SAME chirality-odd cross formula per
+    // side, so they stay paired and the correction does NOT mirror (the earlier mirrored
+    // Left defaults were a regression built on an anatomical-identity assumption the
+    // rendered-thumb harness scenarios falsified — they put ~50° of error on the left).
+    const m = 1;
     return {
       // rollDeg was -170 while the winding override wrongly negated the palm on every
       // confident frame (the -170 was eye-tuned to compensate that ~180° error). With the
@@ -884,14 +892,17 @@ export class SMPLXRetarget {
 
     if (signerRightArmOn && rightTargetScreen) {
       this._activate("Right");
-      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21));
+      // skipForearm also during an interaction hold: with no live hand the IK would re-aim
+      // the forearm FULLY at the target, dropping the hand-orientation lean — a visible
+      // wrist pop right when the hands touch. Held = frozen, forearm included.
+      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21) || holdRight);
     } else if (this._avatar) {
       this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
 
     if (signerLeftArmOn && leftTargetScreen) {
       this._activate("Left");
-      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21));
+      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21) || holdLeft);
     } else if (this._avatar) {
       this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
     }

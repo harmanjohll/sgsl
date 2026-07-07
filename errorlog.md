@@ -82,6 +82,40 @@ run (0.09 SW).
 - Every capture (.json dumps, session recordings, screenshots) embeds the active calibration, so
   field reports stay diagnosable.
 
+## #15 (2026-07-07): the left-hand regression — mirrored defaults, falsified and reverted
+
+**Symptom:** "Left hand is quite a problem" — constant awkward orientation on the left, while
+the right was good; left Auto-tune produced unusable values.
+
+**The investigation is a lesson in measuring the right thing.** The HUD showed a flat left palm
+reading `face:-0.8` where the right read `+0.91`, which suggested the palm-facing stabiliser's
+left sign was inverted — and a plausible history backed it (the Left pin traced to right-hand
+captures from the swapped-routing era). A numeric derivation against an ANATOMICAL expectation
+"confirmed" it. But an A/B test of the **rendered skeleton** (does the avatar's left thumb point
+the anatomically correct way in world space?) falsified the theory: the original sign renders the
+left hand CORRECTLY (thumb −0.093 = viewer's left, as a real left palm-to-camera must), and the
+"fix" broke it. The debug `facing` value is **rig-paired, not anatomical**: the measured palm
+normal and the avatar rig's rest palm axis are built with the same chirality-odd cross product,
+so both flip together for the left hand — a correct left palm legitimately reads `facing ≈ −1`.
+
+**The real defect was #8's "fix":** the mirrored Left defaults (roll/yaw/thumb sign-flipped) were
+derived from the same anatomical-identity assumption. Because the bases are chirality-PAIRED, the
+correction does NOT mirror — the mirrored defaults put ~50° of baseline error on the left hand.
+The same assumption made left Auto-tune solve against the wrong expected basis (reading a correct
+capture as a ~180° inversion).
+
+**Fixes:** Left defaults restored to identical-to-right (calib schema v3 resets stored Left
+settings from the mirrored era); Auto-tune solves against the side-correct expected basis (Left
+pairs at rotY 180°); an inversion guard refuses ~180° solves; and the harness gained four
+`face-*` scenarios asserting BOTH the rig-paired facing sign AND the **rendered thumb side in
+world space** — the anatomy-based check that cannot be fooled by any internal convention, and the
+check that would have caught #8's mirror error before it shipped. Bonus: the interaction hold now
+freezes the forearm too (the IK re-aim was popping the wrist the moment hands touched:
+duo-dropout max drop 0.101 → 0.038 SW).
+
+**Measured:** face-L-toward thumb −0.038 (correct side) / facing −0.97 (correct pairing);
+19/19 harness scenarios pass.
+
 ## Note on calibration migration
 
 Old saved slider settings (localStorage) are migrated on load: roll shifted by the 180° the old

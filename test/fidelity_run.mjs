@@ -99,6 +99,8 @@ const MEASURE = async ({ frames, side, K }) => {
       bends[f] = [null, ang(seg1, seg2), dDir ? ang(seg2, dDir) : null];
     }
     const dbg = (T.retarget._handDbg || {})[sideName] || null;
+    const thumbBone = vrm.humanoid.getBoneNode(BN[sideName + 'ThumbDistal']);
+    const thumbDx = thumbBone ? thumbBone.getWorldPosition(new THREE.Vector3()).x - wrist.x : null;
     return {
       q: [q.x, q.y, q.z, q.w],
       wrist: [wrist.x, wrist.y, wrist.z],
@@ -106,6 +108,7 @@ const MEASURE = async ({ frames, side, K }) => {
       shoulderW: armDbg?.shoulderW || null,
       bends,
       facing: dbg ? dbg.facing : null,
+      thumbDx,
     };
   };
   const out = [];
@@ -171,6 +174,21 @@ function scoreArm(name, frames, meas) {
   };
 }
 
+function scoreFacing(name, meas, side, expectFacing, expectThumbDx) {
+  // Last 5 frames (converged). facing = driven _handDbg palmNormal.z (rig-paired
+  // convention); thumbDx = rendered thumb-vs-wrist world x (anatomical, convention-free).
+  const last = meas.slice(-5).map(m => m.sides[side]);
+  const vals = last.map(m => m.facing).filter(v => v != null);
+  const mean = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+  const tVals = last.map(m => m.thumbDx).filter(v => v != null);
+  const tMean = tVals.reduce((a, b) => a + b, 0) / (tVals.length || 1);
+  return {
+    name, kind: 'facing', meanFacing: +mean.toFixed(2), thumbDx: +tMean.toFixed(3),
+    pass: vals.length > 0 && Math.sign(mean) === expectFacing && Math.abs(mean) > 0.3
+      && tVals.length > 0 && Math.sign(tMean) === expectThumbDx && Math.abs(tMean) > 0.015,
+  };
+}
+
 function scoreDuo(name, frames, meas, window_) {
   const [a, b] = window_;
   const dist3 = (p, q2) => Math.hypot(p[0] - q2[0], p[1] - q2[1], p[2] - q2[2]);
@@ -225,6 +243,7 @@ async function main() {
       const score = sc.kind === 'orient' ? scoreOrient(sc.name, sc.frames, meas)
         : sc.kind === 'shape' ? scoreShape(sc.name, sc.frames, meas)
         : sc.kind === 'duo' ? scoreDuo(sc.name, sc.frames, meas, sc.window)
+        : sc.kind === 'facing' ? scoreFacing(sc.name, meas, sc.side, sc.expectFacing, sc.expectThumbDx)
         : scoreArm(sc.name, sc.frames, meas);
       score.facingChanges = meas.reduce((n, m, i) => n + (i > 0 && m.facing !== meas[i - 1].facing ? 1 : 0), 0);
       results.push(score);
