@@ -69,11 +69,10 @@ const CALIB_DEFAULTS = {
   guardStrictness: 1,                                // deformation-guard strength
   smoothing: 0.5,                                    // stability (lerps are rate-compensated now)
 };
-// The baseline was eye-tuned on the RIGHT hand; the LEFT hand needs the chiral mirror
-// (roll/yaw/thumb sign-flipped, pitch kept) or it carries a constant ~50° wrist error.
-const calibDefaultsFor = (side) => side === 'Left'
-  ? { ...CALIB_DEFAULTS, rollDeg: -CALIB_DEFAULTS.rollDeg, yawDeg: -CALIB_DEFAULTS.yawDeg, thumbDeg: -CALIB_DEFAULTS.thumbDeg }
-  : { ...CALIB_DEFAULTS };
+// IDENTICAL defaults for both sides: the measured and rig rest bases are chirality-paired
+// per side, so the correction does not mirror (the mirrored-Left experiment measurably
+// hurt the left hand and is reverted; the rendered-thumb harness scenarios pin this).
+const calibDefaultsFor = (_side) => ({ ...CALIB_DEFAULTS });
 // Auto-cut: end the recording automatically when the sign is done (motion drops +
 // signer returns to rest), and trim leading/trailing idle. See autocut.js.
 const AUTOCUT_KEY = 'sgsl.autocut.v1';
@@ -632,7 +631,18 @@ function maybeAutoTune(results) {
   }
   if (autoTune.samples.length < AUTOTUNE_SAMPLES) return;
 
-  const solved = solveOrientationOffset(autoTune.samples);
+  // Expected calibrated basis: identity for Right; for Left the rig-paired canonical
+  // flat palm sits at rotY(180°) (see WIND_SIGN comment in retarget.js) — without this
+  // the left solve reads as a ~180° roll and the inversion guard rejects it.
+  const expected = side === 'Left' ? [0, 1, 0, 0] : [0, 0, 0, 1];
+  const solved = solveOrientationOffset(autoTune.samples, expected);
+  if (Math.abs(solved.rollDeg) > 135) {
+    // A near-180° solve means the measured basis is facing-INVERTED — a chirality/
+    // winding regression, not a tuning offset. Refuse rather than bake it in.
+    autoTune = null; syncAutoTuneBtn();
+    setRecStatus(`Auto-tune (${side}): the captured palm reads facing-inverted (roll ${Math.round(solved.rollDeg)}°) — check the Wrist rotation toggle, and report this if it persists.`, 'error');
+    return;
+  }
   if (solved.spreadDeg > 25) {
     // Hand wasn't steady — retry this side rather than bake a bad calibration.
     autoTune.samples = [];
@@ -1153,9 +1163,9 @@ function loadCalibSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(CALIB_KEY));
     if (!s || typeof s !== 'object') return;
-    const old = (s.v || 1) < 2;
+    const v = s.v || 1;
     const migrate = (saved, side) => {
-      if (!old) return mergeSide(saved);
+      if (v >= 2) return mergeSide(saved);
       if (!saved || wasOldDefaults(saved)) return calibDefaultsFor(side);
       return migrateRoll(mergeSide(saved));
     };
@@ -1165,10 +1175,17 @@ function loadCalibSettings() {
     } else {                                       // migrate old single-set format → both hands
       calibSettings = { Right: migrate(s, 'Right'), Left: migrate({ ...s }, 'Left') };
     }
+    // v3: the LEFT defaults shipped mirrored for a while (a regression — see retarget.js
+    // WIND_SIGN comment), so any left tuning from that era fought a ~50° baseline error.
+    // Reset Left to the corrected (identical-to-right) defaults.
+    if (v < 3) {
+      calibSettings.Left = calibDefaultsFor('Left');
+      setTimeout(() => setRecStatus('Left-hand calibration was reset (left-defaults fix). Re-run ✨ Auto-tune if needed.', 'info'), 1500);
+    }
   } catch { /* ignore corrupt/absent settings */ }
 }
 function saveCalibSettings() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide, v: 2 })); } catch { /* private mode */ }
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide, v: 3 })); } catch { /* private mode */ }
 }
 function applyCalibSettings() {   // push BOTH hands' calibration to the retarget
   for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, calibSettings[side]);

@@ -66,11 +66,11 @@ export function eulerYXZToQuat({ pitchDeg = 0, rollDeg = 0, yawDeg = 0 }) {
  *  Returns {pitchDeg, rollDeg, yawDeg, residualDeg, spreadDeg}:
  *  residualDeg — how far from identity the calibrated basis would still be (should be ~0);
  *  spreadDeg   — sample cluster tightness (large = the hand wasn't held steady). */
-export function solveOrientationOffset(qMeasList) {
+export function solveOrientationOffset(qMeasList, qExpected = [0, 0, 0, 1]) {
   const avg = avgQuats(qMeasList);
-  const corr = qConj(avg);                       // qMeas · corr = identity
+  const corr = qMul(qConj(avg), qExpected);      // qMeas · corr = qExpected
   const e = eulerYXZFromQuat(corr);
-  const residualDeg = qAngleDeg(qMul(avg, eulerYXZToQuat(e)));
+  const residualDeg = qAngleDeg(qMul(qMul(avg, eulerYXZToQuat(e)), qConj(qExpected)));
   let spread = 0;
   for (const q of qMeasList) spread = Math.max(spread, qAngleDeg(qMul(q, qConj(avg))));
   return { ...e, residualDeg, spreadDeg: spread };
