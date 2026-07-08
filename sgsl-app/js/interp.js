@@ -39,11 +39,17 @@ export function lerpLM(a, b, t) {
 }
 
 // Interpolate a full holistic frame.
+// NOTE: includes the 3D WORLD hands. These were omitted, so every interpolated
+// playback frame (player, preview, sentence bridges — lerpFrame runs on nearly
+// every rendered frame) lost its world hands and fell back to the legacy 2D hand
+// path, quietly diverging from live rendering.
 export function lerpFrame(a, b, t) {
   if (!a) return b;
   return {
     leftHand:  lerpLM(a.leftHand, b.leftHand, t),
     rightHand: lerpLM(a.rightHand, b.rightHand, t),
+    leftHandWorld:  lerpLM(a.leftHandWorld, b.leftHandWorld, t),
+    rightHandWorld: lerpLM(a.rightHandWorld, b.rightHandWorld, t),
     face:      lerpLM(a.face, b.face, t),
     pose:      lerpLM(a.pose, b.pose, t),
     poseWorld: lerpLM(a.poseWorld, b.poseWorld, t),

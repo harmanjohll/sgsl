@@ -98,7 +98,7 @@ export function bendsFromLandmarks(pts) {
 }
 
 // ── pose + payload builders ─────────────────────────────────────────────────
-function makePose({ wristR = null, wristL = null, occludeShoulder = null } = {}) {
+function makePose({ wristR = null, wristL = null, occludeShoulder = null, elbowR = null, elbowL = null } = {}) {
   const lm = new Array(33).fill(null).map(() => ({ x: 0.5, y: 0.85, z: 0, visibility: 0.2 }));
   const set = (i, x, y, v = 0.95) => { lm[i] = { x, y, z: 0, visibility: v }; };
   set(0, 0.50, 0.28, 0.98);                       // nose
@@ -107,6 +107,8 @@ function makePose({ wristR = null, wristL = null, occludeShoulder = null } = {})
   set(23, 0.56, 0.72); set(24, 0.44, 0.72);       // hips
   if (wristL) set(15, wristL.x, wristL.y); else set(15, 0.60, 0.78, 0.85);  // MP left wrist
   if (wristR) set(16, wristR.x, wristR.y); else set(16, 0.40, 0.78, 0.85);  // MP right wrist
+  if (elbowR) set(14, elbowR.x, elbowR.y);   // default stays low-visibility (pole hint gated off)
+  if (elbowL) set(13, elbowL.x, elbowL.y);
   return lm;
 }
 
@@ -115,16 +117,48 @@ function imageHand(worldPts, target2D, scale = 1.4) {
   return worldPts.map(([x, y, z]) => ({ x: target2D.x + x * scale, y: target2D.y + y * scale, z }));
 }
 
-function frame(worldPts, { label = 'Right', target2D = { x: 0.38, y: 0.45 }, occludeShoulder = null, gtQuat = [0, 0, 0, 1] } = {}) {
-  const world = worldPts.map(([x, y, z]) => ({ x, y, z }));
-  const poseOpts = { occludeShoulder };
+function frame(worldPts, { label = 'Right', target2D = { x: 0.38, y: 0.45 }, occludeShoulder = null, gtQuat = [0, 0, 0, 1], elbowR = null, elbowL = null, za = null, noise = null } = {}) {
+  let pts = worldPts;
+  let img = imageHand(worldPts, target2D);
+  if (noise) {   // seeded landmark noise (see noisy() below): sensor-jitter simulation
+    pts = worldPts.map(([x, y, z]) => [x + noise() , y + noise(), z + noise()]);
+    img = img.map((p) => ({ ...p, x: p.x + noise(), y: p.y + noise() }));
+  }
+  const world = pts.map(([x, y, z]) => ({ x, y, z }));
+  const poseOpts = { occludeShoulder, elbowR, elbowL };
   if (label === 'Right') poseOpts.wristR = target2D; else poseOpts.wristL = target2D;
   return {
     payload: {
-      pose: makePose(poseOpts), poseWorld: null, face: null,
-      hands: [{ categoryName: label, landmarks: imageHand(worldPts, target2D), worldLandmarks: world }],
+      pose: makePose(poseOpts), poseWorld: za, face: null,
+      hands: [{ categoryName: label, landmarks: img, worldLandmarks: world }],
     },
     gt: { quat: gtQuat, bends: bendsFromLandmarks(worldPts) },
+  };
+}
+
+// Synthetic 3D pose-world (za): shoulders 0.36 m apart at z=0; the scripted wrist z is
+// the depth signal the TRUE-DEPTH blend reads. Everything else parked far + visible-ish.
+function makeZa({ wristRZ = null, wristLZ = null } = {}) {
+  const lm = new Array(33).fill(null).map(() => ({ x: 0, y: 0.6, z: 0, visibility: 0.2 }));
+  lm[11] = { x: 0.18, y: 0, z: 0, visibility: 0.95 };
+  lm[12] = { x: -0.18, y: 0, z: 0, visibility: 0.95 };
+  lm[15] = { x: 0.30, y: -0.10, z: wristLZ ?? 0, visibility: 0.9 };
+  lm[16] = { x: -0.30, y: -0.10, z: wristRZ ?? 0, visibility: 0.9 };
+  return lm;
+}
+
+// Deterministic pseudo-gaussian noise source (mulberry32 + Box-Muller), std sigma.
+function noisy(seed, sigma) {
+  let a = seed >>> 0;
+  const rnd = () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return () => {
+    const u = Math.max(rnd(), 1e-9), v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * sigma;
   };
 }
 
@@ -241,6 +275,34 @@ export function buildScenarios() {
       name, side, kind: 'facing', expectFacing, expectThumbDx,
       frames: Array.from({ length: 12 }, () => frame(pts, { label: side, target2D })),
     });
+  }
+
+  // ── TRUE DEPTH: za wrist z sweeps toward the camera; avatar wrist z must follow ──
+  {
+    const frames = [];
+    for (let i = 0; i <= 29; i++) {
+      const z = -0.036 - (i / 29) * 0.50;   // zOff 0.1 -> ~1.5 shoulder-widths toward camera
+      frames.push(frame(flatR, { target2D: { x: 0.38, y: 0.45 }, za: makeZa({ wristRZ: z }) }));
+    }
+    S.push({ name: 'depth-sweep', side: 'Right', kind: 'depth', frames });
+  }
+
+  // ── REAL ELBOW: pose elbow lifts (chicken-wing); avatar elbow must rise ─────────
+  {
+    const frames = [];
+    for (let i = 0; i <= 29; i++) {
+      const u = i / 29;
+      const elbowR = { x: 0.36 - 0.06 * u, y: 0.62 - 0.26 * u };   // low -> high
+      frames.push(frame(flatR, { target2D: { x: 0.38, y: 0.45 }, elbowR }));
+    }
+    S.push({ name: 'elbow-lift', side: 'Right', kind: 'elbow', frames });
+  }
+
+  // ── ONE-EURO: identical seeded sensor noise, filter off vs on ───────────────────
+  for (const [name, filterOff] of [['noise-raw', true], ['noise-filtered', false]]) {
+    const gen = noisy(1234567, 0.004);
+    const frames = Array.from({ length: 45 }, () => frame(flatR, { target2D: { x: 0.38, y: 0.45 }, noise: gen }));
+    S.push({ name, side: 'Right', kind: 'noise', filterOff, frames });
   }
 
   return S;

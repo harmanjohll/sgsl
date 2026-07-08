@@ -73,13 +73,14 @@ async function startServer() {
 }
 
 // Runs one scenario in the page; returns per-frame measurements.
-const MEASURE = async ({ frames, side, K }) => {
+const MEASURE = async ({ frames, side, K, filterOff }) => {
   const T = window.__sgslTest;
   const THREE = window.THREE;
   const BN = THREE.VRMSchema.HumanoidBoneName;
   const vrm = T.avatar.vrm;
   // Deterministic tuning: retarget defaults but NO smoothing (harness measures math, not lag).
   for (const s of ['Right', 'Left']) T.retarget.setHandTuning(s, { smoothing: 0 });
+  T.retarget.setInputFilter?.(!filterOff);   // noise-raw A/Bs the One-Euro off
   const measureSide = (sideName) => {
     const hand = vrm.humanoid.getBoneNode(BN[sideName + 'Hand']);
     const q = hand.getWorldQuaternion(new THREE.Quaternion());
@@ -101,6 +102,7 @@ const MEASURE = async ({ frames, side, K }) => {
     const dbg = (T.retarget._handDbg || {})[sideName] || null;
     const thumbBone = vrm.humanoid.getBoneNode(BN[sideName + 'ThumbDistal']);
     const thumbDx = thumbBone ? thumbBone.getWorldPosition(new THREE.Vector3()).x - wrist.x : null;
+    const elbowPos = vrm.humanoid.getBoneNode(BN[sideName + 'LowerArm']).getWorldPosition(new THREE.Vector3());
     return {
       q: [q.x, q.y, q.z, q.w],
       wrist: [wrist.x, wrist.y, wrist.z],
@@ -109,6 +111,7 @@ const MEASURE = async ({ frames, side, K }) => {
       bends,
       facing: dbg ? dbg.facing : null,
       thumbDx,
+      elbow: [elbowPos.x, elbowPos.y, elbowPos.z],
     };
   };
   const out = [];
@@ -189,6 +192,46 @@ function scoreFacing(name, meas, side, expectFacing, expectThumbDx) {
   };
 }
 
+// Monotonic-follow: values must rise with the swept input (Spearman-ish sign check)
+// and cover a meaningful span — proves the avatar tracks the measured signal.
+function monotonicSpan(vals) {
+  let up = 0, down = 0;
+  for (let i = 1; i < vals.length; i++) {
+    if (vals[i] > vals[i - 1] + 1e-6) up++;
+    else if (vals[i] < vals[i - 1] - 1e-6) down++;
+  }
+  return { span: vals[vals.length - 1] - vals[0], upRatio: up / Math.max(1, up + down) };
+}
+
+function scoreDepth(name, meas) {
+  // za wrist z sweeps toward the camera -> avatar wrist world z must rise.
+  const z = meas.map(m => m.sides.Right.wrist[2]);
+  const { span, upRatio } = monotonicSpan(z);
+  return { name, kind: 'depth', spanZ: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.10 && upRatio > 0.85 };
+}
+
+function scoreElbow(name, meas) {
+  // pose elbow lifts -> avatar elbow world y must rise (wrist target unchanged).
+  const y = meas.map(m => m.sides.Right.elbow[1]);
+  const { span, upRatio } = monotonicSpan(y);
+  return { name, kind: 'elbow', spanY: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.03 && upRatio > 0.85 };
+}
+
+function scoreNoise(name, meas, rawRef) {
+  // Static hand + seeded sensor noise: mean frame-to-frame wrist step (drop the
+  // first 10 convergence frames). Filtered run must cut the raw run's jitter.
+  const steps = [];
+  for (let i = 11; i < meas.length; i++) {
+    const a = meas[i - 1].sides.Right.wrist, b = meas[i].sides.Right.wrist;
+    steps.push(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+  }
+  const mean = steps.reduce((s2, x) => s2 + x, 0) / steps.length;
+  const meanMm = +(mean * 1000).toFixed(2);
+  if (name === 'noise-raw') return { name, kind: 'noise', jitterMm: meanMm, pass: true };   // reference run
+  const ok = rawRef != null && meanMm < rawRef * 0.6;
+  return { name, kind: 'noise', jitterMm: meanMm, vsRaw: rawRef != null ? +(meanMm / rawRef).toFixed(2) : null, pass: ok };
+}
+
 function scoreDuo(name, frames, meas, window_) {
   const [a, b] = window_;
   const dist3 = (p, q2) => Math.hypot(p[0] - q2[0], p[1] - q2[1], p[2] - q2[2]);
@@ -238,12 +281,16 @@ async function main() {
       // Fresh page per scenario: resets retarget streaks/facing state + bone pose.
       await page.goto(`http://localhost:${PORT}/versions/v2-tasks-worker/?replay=1`, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => window.__sgslTest && window.__sgslTest.avatar?.loaded === true, null, { timeout: 90000 });
-      // duo scenarios test frame-count-based dynamics (streak decay, holds) -> K=1.
-      const meas = await page.evaluate(MEASURE, { frames: sc.frames, side: sc.side, K: sc.kind === 'duo' ? 1 : K });
+      // duo/noise scenarios test per-frame dynamics (streak decay, holds, jitter) -> K=1.
+      const K1 = sc.kind === 'duo' || sc.kind === 'noise' ? 1 : K;
+      const meas = await page.evaluate(MEASURE, { frames: sc.frames, side: sc.side, K: K1, filterOff: !!sc.filterOff });
       const score = sc.kind === 'orient' ? scoreOrient(sc.name, sc.frames, meas)
         : sc.kind === 'shape' ? scoreShape(sc.name, sc.frames, meas)
         : sc.kind === 'duo' ? scoreDuo(sc.name, sc.frames, meas, sc.window)
         : sc.kind === 'facing' ? scoreFacing(sc.name, meas, sc.side, sc.expectFacing, sc.expectThumbDx)
+        : sc.kind === 'depth' ? scoreDepth(sc.name, meas)
+        : sc.kind === 'elbow' ? scoreElbow(sc.name, meas)
+        : sc.kind === 'noise' ? scoreNoise(sc.name, meas, results.find(r => r.name === 'noise-raw')?.jitterMm)
         : scoreArm(sc.name, sc.frames, meas);
       score.facingChanges = meas.reduce((n, m, i) => n + (i > 0 && m.facing !== meas[i - 1].facing ? 1 : 0), 0);
       results.push(score);
