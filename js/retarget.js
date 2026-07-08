@@ -20,6 +20,7 @@
    ============================================================ */
 
 import * as Kalidokit from 'kalidokit';
+import { LandmarkFilter } from './one-euro.js';
 
 const remap = Kalidokit.Utils.remap;
 const clamp = Kalidokit.Utils.clamp;
@@ -62,6 +63,11 @@ const MIRROR_X = 1;          // anatomical copy (no left-right mirror); was -1 f
 const FRONT_Z = 1;           // +1 = signing plane sits toward the camera
 const REACH_GAIN = 1.15;     // user shoulder-widths → avatar shoulder-widths
 const BOX_DEPTH = 1.2;       // plane distance in front, in shoulder-widths
+// TRUE DEPTH: MediaPipe's 3D pose (za) carries a real metric wrist z. When it's
+// available + the wrist is visible, the target depth blends this measurement over
+// the synthetic plane by this weight (the plane remains the fallback and the
+// stabilising prior — za z is the noisiest pose channel).
+const DEPTH3D_WEIGHT = 0.65;
 // Absolute fallback (only when the user's shoulders/nose aren't detected):
 const BOX_W = 2.4;           // signing-box width  in shoulder-widths
 const BOX_H = 3.0;           // signing-box height in shoulder-widths
@@ -274,6 +280,9 @@ export class SMPLXRetarget {
     }
     return out;
   }
+
+  /** Input One-Euro de-jitter on/off (default on). Harness uses this to A/B noise. */
+  setInputFilter(on) { this._inputFilter = on !== false; if (!this._inputFilter) this._inFilt = null; }
 
   /** Caller wires up a video element (recorder) or null (viewer). */
   setVideo(video) { this._video = video || null; }
@@ -683,7 +692,7 @@ export class SMPLXRetarget {
    * the avatar's own shoulder world position — never a guessed arm depth.
    * `screen` is any landmark with {x,y}: the hand's wrist, or a pose wrist.
    */
-  _solveArmIK(vrm, side, screen, anchor, skipForearm = false) {
+  _solveArmIK(vrm, side, screen, anchor, skipForearm = false, aux = null) {
     const rig = this._avatar?.armRig?.[side];
     if (!rig || !screen) return false;
     const BN = THREE.VRMSchema.HumanoidBoneName;
@@ -712,10 +721,26 @@ export class SMPLXRetarget {
       const outSign = Math.sign((side === "Right" ? Rs.x : Ls.x) - mid.x) || (side === "Right" ? 1 : -1);
       const crossSW = Math.max(0, -xOffSW * outSign);     // how far PAST the midline (far side)
       const depthScale = clampNum(1 - 0.45 * crossSW, 0.55, 1);
+      // TRUE DEPTH (blend): the 3D pose carries a real metric wrist z. Positive zOff =
+      // wrist toward the camera vs the shoulder midpoint, in USER shoulder-widths — the
+      // same unit as the synthetic plane, so the two blend directly. Gated on the 2D
+      // wrist's visibility (za is hallucinated exactly when the wrist is occluded).
+      let depthSW = this._reachDepth * depthScale;
+      const wIdx = side === "Right" ? 16 : 15;
+      const zw = aux?.za?.[wIdx], zs1 = aux?.za?.[11], zs2 = aux?.za?.[12];
+      const wVis = aux?.pose2D?.[wIdx]?.visibility ?? 0;
+      if (zw && zs1 && zs2 && wVis >= WRIST_VIS_THRESH) {
+        const swWorld = Math.hypot(zs1.x - zs2.x, zs1.y - zs2.y, zs1.z - zs2.z);
+        const zOff = swWorld > 1e-6 ? ((zs1.z + zs2.z) / 2 - zw.z) / swWorld : NaN;
+        if (isFinite(zOff)) {
+          depthSW = depthSW * (1 - DEPTH3D_WEIGHT) + clampNum(zOff, -0.2, 1.8) * DEPTH3D_WEIGHT;
+          depthSW = clampNum(depthSW, 0.15, 2.0);
+        }
+      }
       T = new THREE.Vector3(
         mid.x + xOffSW * avShoulderW,
         mid.y - relY * avShoulderW * this._reachGain,
-        mid.z + avShoulderW * this._reachDepth * depthScale * FRONT_Z,
+        mid.z + avShoulderW * depthSW * FRONT_Z,
       );
     } else {
       // Absolute fallback (no shoulders/nose): image-centered box.
@@ -741,9 +766,30 @@ export class SMPLXRetarget {
     const axis = toT.lengthSq() > 1e-9 ? toT.clone().normalize() : new THREE.Vector3(0, -1, 0);
     const a = (d * d + L1 * L1 - L2 * L2) / (2 * d);
     const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
-    // Pole hint: elbow bends down, toward the camera, and outward per side.
-    const outX = (side === "Right" ? Rs.x : Ls.x) - mid.x;
-    const pole = new THREE.Vector3(Math.sign(outX || (side === "Right" ? 1 : -1)) * 0.3, -1, 0.4 * FRONT_Z);
+    // Pole hint: prefer the signer's REAL tracked elbow (pose 14 = right, 13 = left),
+    // mapped body-relative exactly like the wrist target, at half the target depth —
+    // the avatar's elbow then matches the signer's actual arm posture (raised elbow,
+    // chicken-wing, etc.) instead of a fixed guess. Falls back to the synthetic hint
+    // when the elbow isn't visible.
+    let pole = null;
+    const eIdx = side === "Right" ? 14 : 13;
+    const e2 = aux?.pose2D?.[eIdx];
+    if (anchor && e2 && (e2.visibility ?? 0) >= 0.5) {
+      const exSW = ((e2.x - anchor.x) / anchor.scale) * this._reachGain * MIRROR_X;
+      const eySW = ((e2.y - anchor.y) / anchor.scale) * this._reachGain;
+      const E2 = new THREE.Vector3(
+        mid.x + exSW * avShoulderW,
+        mid.y - eySW * avShoulderW,
+        mid.z + avShoulderW * 0.5 * this._reachDepth * FRONT_Z,
+      );
+      const cand = E2.sub(S.clone().add(T).multiplyScalar(0.5));
+      if (cand.lengthSq() > 1e-6) pole = cand;
+    }
+    if (!pole) {
+      // Synthetic fallback: elbow bends down, toward the camera, and outward per side.
+      const outX = (side === "Right" ? Rs.x : Ls.x) - mid.x;
+      pole = new THREE.Vector3(Math.sign(outX || (side === "Right" ? 1 : -1)) * 0.3, -1, 0.4 * FRONT_Z);
+    }
     let perp = pole.sub(axis.clone().multiplyScalar(pole.dot(axis)));
     if (perp.lengthSq() < 1e-9) perp = new THREE.Vector3(0, -1, 0);
     perp.normalize();
@@ -765,6 +811,42 @@ export class SMPLXRetarget {
     if (!vrm) return;
     let riggedPose, riggedLeftHand, riggedRightHand, riggedFace;
 
+    this._dc++;
+    // Rate compensation (stretch-only): the slerp constants were tuned at ~30 fps, but v2
+    // applies results at the tracking rate (~20-24 fps), silently over-smoothing every time
+    // constant ~1.3-1.5x. Convert per-call lerp fractions to per-TIME: a = 1-(1-a)^(dt/33ms).
+    // Clamped to [1,3]: only stretch for slow call rates — never shrink for fast repeated
+    // calls (replay/preview apply frames back-to-back and must still converge).
+    const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    this._rateK = this._lastApplyMs ? clampNum((nowMs - this._lastApplyMs) / 33.33, 1, 3) : 1;
+    this._lastApplyMs = nowMs;
+
+    // Input de-jitter (One-Euro, speed-adaptive): filter the landmarks every bone
+    // consumes BEFORE any math — still hands stop trembling without adding lag to
+    // fast signs. dt uses the same clamped frame clock as the lerp compensation so
+    // back-to-back replay applies still converge. setInputFilter(false) disables
+    // (the harness A/Bs a raw run against a filtered one).
+    if (this._inputFilter !== false) {
+      const dtSec = (this._rateK || 1) / 30;
+      const F = (this._inFilt ||= {
+        rw: new LandmarkFilter(), lw: new LandmarkFilter(),
+        rh: new LandmarkFilter(), lh: new LandmarkFilter(),   // 2D image hands: the ARM TARGET reads [0]
+        pose: new LandmarkFilter(), za: new LandmarkFilter(),
+      });
+      // NON-MUTATING (shallow copy): the caller's results object stays RAW. The recorder
+      // captures frames from it AFTER this call — recordings are the future ML dataset and
+      // must remain raw sensor data, and replaying a recording must not double-filter.
+      results = {
+        ...results,
+        rightHandWorldLandmarks: F.rw.apply(results.rightHandWorldLandmarks, dtSec),
+        leftHandWorldLandmarks: F.lw.apply(results.leftHandWorldLandmarks, dtSec),
+        rightHandLandmarks: F.rh.apply(results.rightHandLandmarks, dtSec),
+        leftHandLandmarks: F.lh.apply(results.leftHandLandmarks, dtSec),
+        poseLandmarks: F.pose.apply(results.poseLandmarks, dtSec),
+        za: results.za ? F.za.apply(results.za, dtSec) : results.za,
+      };
+    }
+
     const faceLandmarks = results.faceLandmarks;
     const pose3DLandmarks = results.za || results.ea;
     const pose2DLandmarks = results.poseLandmarks;
@@ -781,15 +863,6 @@ export class SMPLXRetarget {
       ? { runtime: "mediapipe", video: this._video }
       : { runtime: "mediapipe" };
 
-    this._dc++;
-    // Rate compensation (stretch-only): the slerp constants were tuned at ~30 fps, but v2
-    // applies results at the tracking rate (~20-24 fps), silently over-smoothing every time
-    // constant ~1.3-1.5x. Convert per-call lerp fractions to per-TIME: a = 1-(1-a)^(dt/33ms).
-    // Clamped to [1,3]: only stretch for slow call rates — never shrink for fast repeated
-    // calls (replay/preview apply frames back-to-back and must still converge).
-    const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    this._rateK = this._lastApplyMs ? clampNum((nowMs - this._lastApplyMs) / 33.33, 1, 3) : 1;
-    this._lastApplyMs = nowMs;
 
     if (faceLandmarks && faceLandmarks.length >= 468) {
       riggedFace = Kalidokit.Face.solve(faceLandmarks, solveOpts);
@@ -895,14 +968,16 @@ export class SMPLXRetarget {
       // skipForearm also during an interaction hold: with no live hand the IK would re-aim
       // the forearm FULLY at the target, dropping the hand-orientation lean — a visible
       // wrist pop right when the hands touch. Held = frozen, forearm included.
-      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21) || holdRight);
+      this._solveArmIK(vrm, "Right", rightTargetScreen, userAnchor, !!(rightHandWorld && rightHandWorld.length >= 21) || holdRight,
+        { za: pose3DLandmarks, pose2D: pose2DLandmarks });
     } else if (this._avatar) {
       this._avatar.slerpToRest(["RightUpperArm", "RightLowerArm", "RightHand"], 0.18);
     }
 
     if (signerLeftArmOn && leftTargetScreen) {
       this._activate("Left");
-      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21) || holdLeft);
+      this._solveArmIK(vrm, "Left", leftTargetScreen, userAnchor, !!(leftHandWorld && leftHandWorld.length >= 21) || holdLeft,
+        { za: pose3DLandmarks, pose2D: pose2DLandmarks });
     } else if (this._avatar) {
       this._avatar.slerpToRest(["LeftUpperArm", "LeftLowerArm", "LeftHand"], 0.18);
     }
