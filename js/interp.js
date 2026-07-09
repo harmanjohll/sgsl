@@ -45,11 +45,17 @@ export function lerpLM(a, b, t) {
 // path, quietly diverging from live rendering.
 export function lerpFrame(a, b, t) {
   if (!a) return b;
+  // World hands interpolate only when BOTH endpoints carry them: lerpLM's null-side
+  // passthrough would otherwise SNAP the channel on at a present/absent boundary
+  // (e.g. a sentence bridge from an old no-world-hands clip into a new recording),
+  // hard-switching solver families mid-bridge. Absent on either side -> the span
+  // renders through the 2D path, matching live dropout behaviour.
+  const both = (x, y) => (x && y) ? lerpLM(x, y, t) : undefined;
   return {
     leftHand:  lerpLM(a.leftHand, b.leftHand, t),
     rightHand: lerpLM(a.rightHand, b.rightHand, t),
-    leftHandWorld:  lerpLM(a.leftHandWorld, b.leftHandWorld, t),
-    rightHandWorld: lerpLM(a.rightHandWorld, b.rightHandWorld, t),
+    leftHandWorld:  both(a.leftHandWorld, b.leftHandWorld),
+    rightHandWorld: both(a.rightHandWorld, b.rightHandWorld),
     face:      lerpLM(a.face, b.face, t),
     pose:      lerpLM(a.pose, b.pose, t),
     poseWorld: lerpLM(a.poseWorld, b.poseWorld, t),
