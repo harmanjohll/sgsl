@@ -203,16 +203,16 @@ function monotonicSpan(vals) {
   return { span: vals[vals.length - 1] - vals[0], upRatio: up / Math.max(1, up + down) };
 }
 
-function scoreDepth(name, meas) {
+function scoreDepth(name, meas, side) {
   // za wrist z sweeps toward the camera -> avatar wrist world z must rise.
-  const z = meas.map(m => m.sides.Right.wrist[2]);
+  const z = meas.map(m => m.sides[side].wrist[2]);
   const { span, upRatio } = monotonicSpan(z);
   return { name, kind: 'depth', spanZ: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.10 && upRatio > 0.85 };
 }
 
-function scoreElbow(name, meas) {
+function scoreElbow(name, meas, side) {
   // pose elbow lifts -> avatar elbow world y must rise (wrist target unchanged).
-  const y = meas.map(m => m.sides.Right.elbow[1]);
+  const y = meas.map(m => m.sides[side].elbow[1]);
   const { span, upRatio } = monotonicSpan(y);
   return { name, kind: 'elbow', spanY: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.03 && upRatio > 0.85 };
 }
@@ -288,8 +288,8 @@ async function main() {
         : sc.kind === 'shape' ? scoreShape(sc.name, sc.frames, meas)
         : sc.kind === 'duo' ? scoreDuo(sc.name, sc.frames, meas, sc.window)
         : sc.kind === 'facing' ? scoreFacing(sc.name, meas, sc.side, sc.expectFacing, sc.expectThumbDx)
-        : sc.kind === 'depth' ? scoreDepth(sc.name, meas)
-        : sc.kind === 'elbow' ? scoreElbow(sc.name, meas)
+        : sc.kind === 'depth' ? scoreDepth(sc.name, meas, sc.side)
+        : sc.kind === 'elbow' ? scoreElbow(sc.name, meas, sc.side)
         : sc.kind === 'noise' ? scoreNoise(sc.name, meas, results.find(r => r.name === 'noise-raw')?.jitterMm)
         : scoreArm(sc.name, sc.frames, meas);
       score.facingChanges = meas.reduce((n, m, i) => n + (i > 0 && m.facing !== meas[i - 1].facing ? 1 : 0), 0);

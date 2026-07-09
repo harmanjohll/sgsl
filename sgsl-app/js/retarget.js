@@ -243,6 +243,11 @@ export class SMPLXRetarget {
     oldLookTarget = new THREE.Euler();
     this._rightArmStreak = 0;
     this._leftArmStreak = 0;
+    // Clip boundary = new input stream: drop the One-Euro state + frame clock, or the
+    // first frames of every playback/preview/recording get dragged from the previous
+    // stream's final pose (player.js and recorder.js call reset() at exactly these points).
+    this._inFilt = null;
+    this._lastApplyMs = 0;
   }
 
   /** Per-signer finger calibration (open→fist range), or null to use defaults.
@@ -707,6 +712,7 @@ export class SMPLXRetarget {
     const avShoulderW = Rs.distanceTo(Ls) || 0.25;
 
     let T;
+    let depthSW = this._reachDepth;   // hoisted: the elbow pole below tracks the real target depth
     if (anchor) {
       // BODY-RELATIVE: wrist position relative to the user's shoulders, in
       // shoulder-width units → same offset (scaled) from the avatar's
@@ -725,10 +731,13 @@ export class SMPLXRetarget {
       // wrist toward the camera vs the shoulder midpoint, in USER shoulder-widths — the
       // same unit as the synthetic plane, so the two blend directly. Gated on the 2D
       // wrist's visibility (za is hallucinated exactly when the wrist is occluded).
-      let depthSW = this._reachDepth * depthScale;
+      depthSW = this._reachDepth * depthScale;
       const wIdx = side === "Right" ? 16 : 15;
       const zw = aux?.za?.[wIdx], zs1 = aux?.za?.[11], zs2 = aux?.za?.[12];
-      const wVis = aux?.pose2D?.[wIdx]?.visibility ?? 0;
+      // Absent visibility = "no signal, trust it" (?? 1) — the v2 adapter STRIPS an
+      // all-zero visibility field by contract; defaulting to 0 here silently disabled
+      // true depth on that whole pipeline.
+      const wVis = aux?.pose2D?.[wIdx]?.visibility ?? 1;
       if (zw && zs1 && zs2 && wVis >= WRIST_VIS_THRESH) {
         const swWorld = Math.hypot(zs1.x - zs2.x, zs1.y - zs2.y, zs1.z - zs2.z);
         const zOff = swWorld > 1e-6 ? ((zs1.z + zs2.z) / 2 - zw.z) / swWorld : NaN;
@@ -774,13 +783,13 @@ export class SMPLXRetarget {
     let pole = null;
     const eIdx = side === "Right" ? 14 : 13;
     const e2 = aux?.pose2D?.[eIdx];
-    if (anchor && e2 && (e2.visibility ?? 0) >= 0.5) {
+    if (anchor && e2 && (e2.visibility ?? 1) >= 0.5) {   // absent visibility = trust (adapter contract)
       const exSW = ((e2.x - anchor.x) / anchor.scale) * this._reachGain * MIRROR_X;
       const eySW = ((e2.y - anchor.y) / anchor.scale) * this._reachGain;
       const E2 = new THREE.Vector3(
         mid.x + exSW * avShoulderW,
         mid.y - eySW * avShoulderW,
-        mid.z + avShoulderW * 0.5 * this._reachDepth * FRONT_Z,
+        mid.z + avShoulderW * 0.5 * depthSW * FRONT_Z,
       );
       const cand = E2.sub(S.clone().add(T).multiplyScalar(0.5));
       if (cand.lengthSq() > 1e-6) pole = cand;
@@ -843,7 +852,11 @@ export class SMPLXRetarget {
         rightHandLandmarks: F.rh.apply(results.rightHandLandmarks, dtSec),
         leftHandLandmarks: F.lh.apply(results.leftHandLandmarks, dtSec),
         poseLandmarks: F.pose.apply(results.poseLandmarks, dtSec),
-        za: results.za ? F.za.apply(results.za, dtSec) : results.za,
+        // Unconditional apply: a null za must still advance the filter's missed-frame
+        // counter or stale state survives dropouts and drags the depth signal on
+        // reappearance. Legacy builds exposing the world pose as `ea` funnel through
+        // the same filter (consts below read za first).
+        za: F.za.apply(results.za || results.ea || null, dtSec),
       };
     }
 

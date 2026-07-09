@@ -286,6 +286,16 @@ export function buildScenarios() {
     }
     S.push({ name: 'depth-sweep', side: 'Right', kind: 'depth', frames });
   }
+  {
+    // Left mirror — this codebase shipped a per-side index bug once (crossed pose-wrist
+    // fallback); the left lane keeps za 15 / elbow 13 honest.
+    const frames = [];
+    for (let i = 0; i <= 29; i++) {
+      const z = -0.036 - (i / 29) * 0.50;
+      frames.push(frame(flatL, { label: 'Left', target2D: { x: 0.62, y: 0.45 }, za: makeZa({ wristLZ: z }) }));
+    }
+    S.push({ name: 'depth-sweep-L', side: 'Left', kind: 'depth', frames });
+  }
 
   // ── REAL ELBOW: pose elbow lifts (chicken-wing); avatar elbow must rise ─────────
   {
@@ -296,6 +306,15 @@ export function buildScenarios() {
       frames.push(frame(flatR, { target2D: { x: 0.38, y: 0.45 }, elbowR }));
     }
     S.push({ name: 'elbow-lift', side: 'Right', kind: 'elbow', frames });
+  }
+  {
+    const frames = [];
+    for (let i = 0; i <= 29; i++) {
+      const u = i / 29;
+      const elbowL = { x: 0.64 + 0.06 * u, y: 0.62 - 0.26 * u };
+      frames.push(frame(flatL, { label: 'Left', target2D: { x: 0.62, y: 0.45 }, elbowL }));
+    }
+    S.push({ name: 'elbow-lift-L', side: 'Left', kind: 'elbow', frames });
   }
 
   // ── ONE-EURO: identical seeded sensor noise, filter off vs on ───────────────────

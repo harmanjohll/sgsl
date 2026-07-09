@@ -81,6 +81,11 @@ try { autoCutEnabled = localStorage.getItem(AUTOCUT_KEY) !== '0'; } catch { /* d
 let autoCutter = null;          // live AutoCut instance while recording
 let autoCutCountdown = null;    // ms until auto-stop (for the timer display)
 let autoCutDidTrim = false;
+// While a recorded preview is replaying, the LIVE camera drive is gated off: both run
+// through the same retarget (and its stateful One-Euro input filters), and interleaving
+// two different landmark streams temporally blends them — the preview would be
+// contaminated by the live hand and vice versa.
+let previewing = false;
 
 // Auto body-calibration: when no baseline exists yet, quietly collect good pose frames
 // and set it automatically (median over ~40 frames, ~1.5s) — the Calibrate button becomes
@@ -491,8 +496,8 @@ function onHolisticResults(results) {
   // 2) Draw overlay (framing box color reflects gate state).
   drawOverlay(results, latestFraming);
 
-  // 3) Live avatar preview.
-  if (avatar?.vrm && retarget) {
+  // 3) Live avatar preview (gated off while a recorded preview replays — see `previewing`).
+  if (avatar?.vrm && retarget && !previewing) {
     retarget.applyFromMediaPipe(avatar.vrm, results);
     // Capture the arm AFTER the drive so it matches this frame's hands exactly.
     if (pendingArmFrame) { pendingArmFrame.arm = armWorld(avatar.vrm); pendingArmFrame = null; }
@@ -1020,7 +1025,8 @@ function previewRecording() {
   if (!frames.length || !avatar?.loaded) return;
 
   setRecStatus(`Previewing (${frames.length} frames)...`, 'info');
-  retarget.reset();
+  previewing = true;
+  retarget.reset();   // also clears the One-Euro bank -> preview starts unseeded
   avatar.setPlaying(true);
 
   // Real-time preview driven by stored frame timestamps.
@@ -1035,6 +1041,8 @@ function previewRecording() {
     if (i >= frames.length - 1) {
       renderPreviewFrame(frames[frames.length - 1]);
       avatar.setPlaying(false);
+      previewing = false;
+      retarget.reset();   // hand the retarget back to the live stream with clean filters
       setRecStatus('Preview complete. Save or discard.', 'success');
       return;
     }
