@@ -52,6 +52,7 @@ export function lerpFrame(a, b, t) {
   // renders through the 2D path, matching live dropout behaviour.
   const both = (x, y) => (x && y) ? lerpLM(x, y, t) : undefined;
   return {
+    nmm: (t < 0.5 ? a.nmm : b.nmm) ?? null,   // non-manual marker rides the nearer endpoint
     leftHand:  lerpLM(a.leftHand, b.leftHand, t),
     rightHand: lerpLM(a.rightHand, b.rightHand, t),
     leftHandWorld:  both(a.leftHandWorld, b.leftHandWorld),

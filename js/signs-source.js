@@ -18,6 +18,7 @@
    ============================================================ */
 
 import * as store from './store.js';
+import { applyEdits, getEditsFor } from './sign-edits.js';
 
 const params = new URLSearchParams(
   typeof location !== 'undefined' ? location.search : ''
@@ -75,11 +76,12 @@ export async function getManifest() {
 
 /** Full sign record { label, landmarks, ... }. Local recordings win. */
 export async function getSign(label) {
-  if (USE_API) return fetchJSON(`/api/sign/${label}`);
+  const edits = getEditsFor(label);   // per-sign trim/speed overlay (raw storage untouched)
+  if (USE_API) return applyEdits(await fetchJSON(`/api/sign/${label}`), edits);
   let local = null;
   try { local = await store.getSign(label); } catch (_) { local = null; }
-  if (local) return local;
-  return fetchJSON(`${SIGNS_DIR}/${label}.json`);
+  if (local) return applyEdits(local, edits);
+  return applyEdits(await fetchJSON(`${SIGNS_DIR}/${label}.json`), edits);
 }
 
 /** Persist a recorded sign. Static mode -> IndexedDB; api mode -> POST. */
