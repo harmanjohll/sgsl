@@ -70,18 +70,22 @@ async function loadClip(label) {
  * Build one concatenated frame sequence from an ordered list of labels.
  * Bridges + pauses are inserted between clips.
  */
-export async function buildSentenceSequence(labels) {
+export async function buildSentenceSequence(items) {
+  // items: strings (labels) or { label, nmm } — nmm ('question'|'negation'|'topic')
+  // is stamped on every frame of that clip so playback can render the non-manual
+  // marker (brow/head) alongside the hands. Bridges stay neutral.
   const clips = [];
-  for (const label of labels) {
+  for (const it of items) {
+    const label = typeof it === 'string' ? it : it.label;
     const clip = await loadClip(label);
-    if (clip) clips.push(clip);
+    if (clip) clips.push({ frames: clip, nmm: (typeof it === 'object' && it.nmm) || null });
   }
   if (!clips.length) return [];
 
   const out = [];
   let offset = 0;
   for (let c = 0; c < clips.length; c++) {
-    const frames = clips[c];
+    const { frames, nmm } = clips[c];
 
     if (c > 0 && out.length) {
       // Min-jerk bridge from the last emitted pose into this clip.
@@ -96,7 +100,7 @@ export async function buildSentenceSequence(labels) {
       offset += BRIDGE_MS;
     }
 
-    for (const f of frames) out.push({ ...f, t: offset + f.t });
+    for (const f of frames) out.push({ ...f, t: offset + f.t, nmm });
     offset += frames[frames.length - 1].t + PAUSE_MS;
   }
   return out;
@@ -112,7 +116,7 @@ export async function signText(text, playback) {
   const labels = manifest.map(s => s.label);
   const resolved = resolveLabels(tokens, labels);
 
-  const playable = resolved.filter(r => r.available).map(r => r.label);
+  const playable = resolved.filter(r => r.available).map(r => ({ label: r.label, nmm: r.nmm || null }));
   const seq = await buildSentenceSequence(playable);
   if (seq.length && playback) playback.playFrames(seq);
   return resolved;

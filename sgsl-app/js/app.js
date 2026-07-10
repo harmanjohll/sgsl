@@ -12,6 +12,7 @@
 
 import { Playback } from './player.js';
 import * as signsSource from './signs-source.js';
+import { getEditsFor, saveEditsFor } from './sign-edits.js';
 import { signText, resolveLabels } from './sentence-engine.js';
 import { parseSentence } from './gloss.js';
 
@@ -117,6 +118,56 @@ async function initLibrary() {
   wireSpeed('lib-speed', 'lib-speed-label', libraryPlayback);
 }
 
+// ── Per-sign edit panel (trim/speed overlay; replays live on change) ─────────
+let editLabel = null;
+let editReplayTimer = null;
+function selectSignForEdit(label) {
+  editLabel = label;
+  const panel = document.getElementById('lib-edit');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  const e = getEditsFor(label) || {};
+  setEditControl('lib-trim-start', e.trimStartMs || 0, (v) => `${(v / 1000).toFixed(2)}s`);
+  setEditControl('lib-trim-end', e.trimEndMs || 0, (v) => `${(v / 1000).toFixed(2)}s`);
+  setEditControl('lib-sign-speed', e.speed || 1, (v) => `${v.toFixed(2)}x`);
+  const lab = document.getElementById('lib-edit-label');
+  if (lab) lab.textContent = `Edit "${label}":`;
+}
+function setEditControl(id, value, fmt) {
+  const el = document.getElementById(id), lb = document.getElementById(id + '-label');
+  if (el) el.value = value;
+  if (lb) lb.textContent = fmt(Number(value));
+}
+function wireEditPanel() {
+  const read = () => ({
+    trimStartMs: Number(document.getElementById('lib-trim-start')?.value || 0),
+    trimEndMs: Number(document.getElementById('lib-trim-end')?.value || 0),
+    speed: Number(document.getElementById('lib-sign-speed')?.value || 1),
+  });
+  const onChange = (id, fmt) => {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', () => {
+      const lb = document.getElementById(id + '-label');
+      if (lb) lb.textContent = fmt(Number(el.value));
+      if (!editLabel) return;
+      saveEditsFor(editLabel, read());
+      // debounce the replay so dragging a slider doesn't restart per tick
+      clearTimeout(editReplayTimer);
+      editReplayTimer = setTimeout(() => libraryPlayback.playLabel(editLabel), 250);
+    });
+  };
+  onChange('lib-trim-start', (v) => `${(v / 1000).toFixed(2)}s`);
+  onChange('lib-trim-end', (v) => `${(v / 1000).toFixed(2)}s`);
+  onChange('lib-sign-speed', (v) => `${v.toFixed(2)}x`);
+  document.getElementById('lib-edit-reset')?.addEventListener('click', () => {
+    if (!editLabel) return;
+    saveEditsFor(editLabel, null);
+    selectSignForEdit(editLabel);
+    libraryPlayback.playLabel(editLabel);
+  });
+}
+wireEditPanel();
+
 async function renderLibraryList() {
   const list = document.getElementById('lib-sign-list');
   if (!list) return;
@@ -140,6 +191,7 @@ async function renderLibraryList() {
     btn.addEventListener('click', () => {
       list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      selectSignForEdit(s.label);
       libraryPlayback.playLabel(s.label);
     });
 

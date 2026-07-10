@@ -265,6 +265,61 @@ export class SMPLXAvatar {
   /** Called by the retarget layer each frame it writes bones. */
   markActive() { this._silentFrames = 0; }
 
+  /** Non-manual marker (SgSL grammar on the face/head) for playback:
+   *  'question' — brow raise (VRM 'Fun' preset) + slight head-forward lean;
+   *  'negation' — head shake; null — blend back to neutral.
+   *  Head/neck motion composes on a BASE captured when the marker engages
+   *  (absolute overwrite per frame, never additive) so it cannot compound,
+   *  whether or not the face channel is rewriting those bones. */
+  applyNMM(nmm) {
+    if (!this.vrm?.humanoid) return;
+    const st = (this._nmm ||= { kind: null, w: 0, phase: 0, headBase: null, neckBase: null });
+    const BN = THREE.VRMSchema.HumanoidBoneName;
+    const head = this.vrm.humanoid.getBoneNode(BN.Head);
+    const neck = this.vrm.humanoid.getBoneNode(BN.Neck);
+
+    // Blend weight: rise toward 1 while a marker is active, fall to 0 when neutral
+    // or when switching kinds (switch completes once fully blended out).
+    const target = nmm && nmm === st.kind ? 1 : 0;
+    if (nmm && st.kind == null) {
+      st.kind = nmm;
+      st.headBase = head ? head.quaternion.clone() : null;
+      st.neckBase = neck ? neck.quaternion.clone() : null;
+      st.phase = 0;
+    }
+    st.w += ((nmm && nmm === st.kind ? 1 : 0) - st.w) * 0.15;
+    if (st.w < 0.02 && target === 0) {
+      // fully blended out: restore + allow a different marker next frame
+      if (st.kind) {
+        if (st.headBase && head) head.quaternion.copy(st.headBase);
+        if (st.neckBase && neck) neck.quaternion.copy(st.neckBase);
+        this.vrm.blendShapeProxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0);
+        this.vrm.blendShapeProxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Angry, 0);
+      }
+      st.kind = null;
+      return;
+    }
+    if (!st.kind) return;
+
+    const proxy = this.vrm.blendShapeProxy;
+    if (st.kind === 'question') {
+      if (neck && st.neckBase) {
+        const lean = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.10 * st.w);
+        neck.quaternion.copy(st.neckBase).multiply(lean);
+      }
+      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0.45 * st.w);   // brow-raise stand-in
+    } else if (st.kind === 'negation') {
+      if (head && st.headBase) {
+        st.phase += 0.32;
+        const shake = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.sin(st.phase) * 0.13 * st.w);
+        head.quaternion.copy(st.headBase).multiply(shake);
+      }
+      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Angry, 0.20 * st.w);  // slight frown
+    } else if (st.kind === 'topic') {
+      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0.25 * st.w);
+    }
+  }
+
   /**
    * Actively slerp a set of bones back toward their rest snapshot.
    * Used by retarget.js when a per-arm visibility check fails — we

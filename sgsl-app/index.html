@@ -207,6 +207,23 @@
             <span id="lib-speed-label">1.0x</span>
           </label>
         </div>
+        <!-- Per-sign edits (non-destructive overlay; raw recording untouched) -->
+        <div id="lib-edit" class="control-row hidden">
+          <span class="hint" id="lib-edit-label">Edit:</span>
+          <label class="speed-control">Trim start:
+            <input type="range" id="lib-trim-start" min="0" max="2000" step="50" value="0">
+            <span id="lib-trim-start-label">0.00s</span>
+          </label>
+          <label class="speed-control">Trim end:
+            <input type="range" id="lib-trim-end" min="0" max="2000" step="50" value="0">
+            <span id="lib-trim-end-label">0.00s</span>
+          </label>
+          <label class="speed-control">Sign speed:
+            <input type="range" id="lib-sign-speed" min="0.5" max="2" step="0.05" value="1">
+            <span id="lib-sign-speed-label">1.00x</span>
+          </label>
+          <button id="lib-edit-reset" class="btn">Reset edits</button>
+        </div>
       </div>
       <div id="lib-status" class="status status-info">Initializing…</div>
     </section>

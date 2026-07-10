@@ -63,6 +63,9 @@ export class Playback {
       rightHandWorldLandmarks: toMP(frame.rightHandWorld),
       leftHandWorldLandmarks: toMP(frame.leftHandWorld),
     });
+    // Non-manual marker (SgSL grammar on the face/head): question = brow raise +
+    // slight head-forward; negation = head shake. Neutral (null) blends out.
+    this.avatar.applyNMM?.(frame.nmm ?? null);
   }
 
   // ─── Play an explicit frame sequence ──────────────────────
