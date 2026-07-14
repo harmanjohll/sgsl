@@ -235,7 +235,7 @@ async function initTest() {
   testLoaded = true;
   const { TestController } = await import('./test-mode.js');
   testCtl = new TestController({
-    viewportId: 'test-viewport', videoId: 'test-video', statusId: 'test-status',
+    viewportId: 'test-viewport', videoId: 'test-video', overlayId: 'test-overlay', statusId: 'test-status',
     onResult: (v) => {
       testSession.attempts++; if (v.pass) testSession.passed++;
       const res = document.getElementById('test-result');
@@ -259,6 +259,16 @@ async function initTest() {
   });
   attemptBtn?.addEventListener('click', () => { testCtl.beginAttempt(); doneBtn.disabled = false; });
   doneBtn?.addEventListener('click', () => testCtl.endAttempt());
+
+  const STRICT_LEVELS = ['easy', 'normal', 'strict'];
+  const STRICT_LABELS = ['Easy', 'Normal', 'Strict'];
+  const strictSlider = document.getElementById('test-strictness');
+  const strictLabel = document.getElementById('test-strictness-label');
+  strictSlider?.addEventListener('input', () => {
+    const i = parseInt(strictSlider.value, 10) || 0;
+    testCtl.setStrictness(STRICT_LEVELS[i]);
+    if (strictLabel) strictLabel.textContent = STRICT_LABELS[i];
+  });
 
   function renderTestList(labels) {
     const list = document.getElementById('test-signlist');

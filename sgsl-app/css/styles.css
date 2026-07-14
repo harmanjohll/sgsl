@@ -192,6 +192,13 @@ html, body {
 .hint { color: var(--text-dim); font-size: 13px; }
 .hidden { display: none !important; }
 
+/* Numbered "how to test" steps + hand-color legend (matches the camera overlay). */
+.test-steps { margin: 8px 0; padding-left: 22px; color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.test-steps li { margin: 3px 0; }
+.test-steps strong { color: var(--text); }
+.leg-r { color: #00c46a; font-weight: 600; }
+.leg-l { color: #ff8800; font-weight: 600; }
+
 /* ─── Tabs ─────────────────────────────────── */
 .tabs { display: flex; gap: 4px; margin-left: auto; }
 .tab {

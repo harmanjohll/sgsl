@@ -30,6 +30,16 @@ const W = { loc: 1.0, shape: 2.2, presence: 1.4, shapeMissing: 0.5 };
 const SCORE_TAU = 0.42;    // score = 100·exp(−normDistance / TAU)
 const PASS_SCORE = 55;     // grade C — "close enough to pass"
 
+// Strictness presets — how much deviation from the reference is tolerated. `normal` IS the tuned
+// baseline (unchanged): a bigger tau is more forgiving (a given deviation scores higher), and pass
+// is the grade-C boundary. This is the user-facing "allowance for deviation" knob (Test mode).
+export const TOLERANCE = {
+  easy:   { tau: 0.55, pass: 50 },
+  normal: { tau: SCORE_TAU, pass: PASS_SCORE },
+  strict: { tau: 0.32, pass: 62 },
+};
+const tolOf = (level) => TOLERANCE[level] || TOLERANCE.normal;
+
 const dist2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
 /** shoulder frame {mid:[x,y], sw} from calibration, else from pose 11/12. */
@@ -96,12 +106,14 @@ function frameCost(fa, fb, acc) {
   return total;
 }
 
-const gradeFor = (score) =>
-  score >= 85 ? 'A' : score >= 70 ? 'B' : score >= PASS_SCORE ? 'C' : score >= 40 ? 'D' : 'F';
+const gradeFor = (score, pass = PASS_SCORE) =>
+  score >= 85 ? 'A' : score >= 70 ? 'B' : score >= pass ? 'C' : score >= 40 ? 'D' : 'F';
 
 /** Score a performed attempt against ONE reference. Both are raw frame arrays
- *  plus their calibration. Returns { score, grade, pass, distance, feedback }. */
-export function scoreAttempt(attempt, attemptCalib, reference, refCalib) {
+ *  plus their calibration. `level` (easy|normal|strict) sets the tolerance; default
+ *  `normal` reproduces the original constants. Returns { score, grade, pass, distance, feedback }. */
+export function scoreAttempt(attempt, attemptCalib, reference, refCalib, level = 'normal') {
+  const { tau, pass: passScore } = tolOf(level);
   const A = normalizeSequence(attempt, attemptCalib);
   const B = normalizeSequence(reference, refCalib);
   const withHand = (seq) => seq.filter(f => f.R || f.L).length;
@@ -112,7 +124,7 @@ export function scoreAttempt(attempt, attemptCalib, reference, refCalib) {
 
   const acc = { R: { loc: 0, shape: 0, presence: 0, n: 0 }, L: { loc: 0, shape: 0, presence: 0, n: 0 } };
   const { normDistance } = dtw(A, B, (a, b) => frameCost(a, b, acc), { band: 0.25 });
-  const score = Math.round(100 * Math.exp(-normDistance / SCORE_TAU));
+  const score = Math.round(100 * Math.exp(-normDistance / tau));
 
   // Feedback: name the worst channel per active hand.
   const feedback = [];
@@ -123,16 +135,16 @@ export function scoreAttempt(attempt, attemptCalib, reference, refCalib) {
     else if (c.shape / Math.max(1, c.n) > 0.35) feedback.push(`Your ${label} handshape drifted from the target.`);
     else if (c.loc / Math.max(1, c.n) > 0.6) feedback.push(`Your ${label} hand's placement/movement was off.`);
   }
-  if (!feedback.length && score >= PASS_SCORE) feedback.push('Clean — that matches the reference well.');
+  if (!feedback.length && score >= passScore) feedback.push('Clean — that matches the reference well.');
 
-  return { score, grade: gradeFor(score), pass: score >= PASS_SCORE, distance: +normDistance.toFixed(4), feedback };
+  return { score, grade: gradeFor(score, passScore), pass: score >= passScore, distance: +normDistance.toFixed(4), feedback };
 }
 
 /** Rank a performed attempt against MANY references. templates: [{label, frames, calibration}].
  *  Returns { ranked:[{label,score,distance}…], best, margin }. */
-export function classify(attempt, attemptCalib, templates) {
+export function classify(attempt, attemptCalib, templates, level = 'normal') {
   const ranked = templates.map(t => {
-    const r = scoreAttempt(attempt, attemptCalib, t.frames, t.calibration);
+    const r = scoreAttempt(attempt, attemptCalib, t.frames, t.calibration, level);
     return { label: t.label, score: r.score, distance: r.distance };
   }).sort((a, b) => b.score - a.score);
   return { ranked, best: ranked[0] || null, margin: ranked.length > 1 ? ranked[0].score - ranked[1].score : ranked[0]?.score || 0 };
@@ -140,11 +152,11 @@ export function classify(attempt, attemptCalib, templates) {
 
 /** Test-mode verdict against a PROMPTED target: pass only if the attempt clears the
  *  bar AND the prompted sign is the nearest template (kills "any wiggle passes"). */
-export function verifyAgainstTarget(attempt, attemptCalib, targetLabel, templates) {
+export function verifyAgainstTarget(attempt, attemptCalib, targetLabel, templates, level = 'normal') {
   const target = templates.find(t => t.label === targetLabel);
   if (!target) return { score: 0, grade: 'F', pass: false, feedback: ['No reference for this sign yet.'], nearest: null };
-  const scored = scoreAttempt(attempt, attemptCalib, target.frames, target.calibration);
-  const { best } = classify(attempt, attemptCalib, templates);
+  const scored = scoreAttempt(attempt, attemptCalib, target.frames, target.calibration, level);
+  const { best } = classify(attempt, attemptCalib, templates, level);
   // Co-nearest counts: integer scores can tie, and classify's stable sort would arbitrarily
   // put another sign first — don't reject a correctly-performed target on array order.
   const isNearest = best && (best.label === targetLabel || best.score === scored.score);

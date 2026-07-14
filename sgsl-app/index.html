@@ -110,15 +110,31 @@
       <h2 class="sidebar-title">Test yourself</h2>
       <div class="camera-container">
         <video id="test-video" class="rec-video" playsinline muted></video>
+        <canvas id="test-overlay" class="rec-overlay"></canvas>
         <div id="test-camera-status" class="camera-status">Press "Start camera".</div>
       </div>
+      <ol class="test-steps">
+        <li><strong>Start the camera</strong> and stand back so your head and both hands are in
+          frame — your hand skeleton lights up (<span class="leg-r">green = right</span>,
+          <span class="leg-l">orange = left</span>) when you're tracked.</li>
+        <li><strong>Pick a sign</strong> from the list below.</li>
+        <li>Press <strong>Sign the word</strong>, perform it once, then hold still — it auto-stops
+          (or press <strong>I'm done</strong>).</li>
+        <li>Read your <strong>grade</strong> and the tip on what to fix, then try again.</li>
+      </ol>
+      <p class="hint">Only signs recorded in the new format can be tested.</p>
       <div class="rec-btn-row">
         <button id="btn-test-start" class="btn btn-record">Start camera</button>
         <button id="btn-test-attempt" class="btn" disabled>● Sign the word</button>
         <button id="btn-test-done" class="btn" disabled>I'm done</button>
       </div>
-      <p class="hint">Pick a sign, press "Sign the word", perform it, and I'll score you. Only signs
-        recorded in the new format are testable.</p>
+      <label class="speed-control">Scoring strictness:
+        <input type="range" id="test-strictness" min="0" max="2" step="1" value="1">
+        <span id="test-strictness-label">Normal</span>
+      </label>
+      <p class="hint">Scoring already ignores where you stand, your size in frame, and how fast you
+        sign — strictness only tunes how closely your handshape and movement must match. (A learned
+        per-signer model comes later, once there are many examples per sign.)</p>
       <div class="calib-group-title">Pick a sign to practice</div>
       <div id="test-signlist" class="sign-list"><p class="hint">Start the camera to load testable signs…</p></div>
       <div id="test-result" class="quality-overall"></div>

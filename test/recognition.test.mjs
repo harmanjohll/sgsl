@@ -132,5 +132,17 @@ const ref = makeSign({ shape: 'flat', path: 'wave' });
   check('tie with identical template still passes target', v.pass === true, `(score ${v.score}, nearest ${v.nearest})`);
 }
 
+// 12) strictness knob: the same imperfect attempt scores easy >= normal >= strict (deviation
+//     tolerance control), and omitting the level reproduces 'normal' exactly (backward compat).
+{
+  const chop = makeSign({ shape: 'flat', path: 'chop' });   // real, non-zero residual distance
+  const easy = scoreAttempt(chop.frames, chop.calib, ref.frames, ref.calib, 'easy').score;
+  const normal = scoreAttempt(chop.frames, chop.calib, ref.frames, ref.calib, 'normal').score;
+  const strict = scoreAttempt(chop.frames, chop.calib, ref.frames, ref.calib, 'strict').score;
+  check('strictness: easy >= normal >= strict', easy >= normal && normal >= strict && easy > strict, `(easy ${easy}, normal ${normal}, strict ${strict})`);
+  const dflt = scoreAttempt(chop.frames, chop.calib, ref.frames, ref.calib).score;
+  check('strictness: default === normal', dflt === normal, `(default ${dflt} vs normal ${normal})`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);
