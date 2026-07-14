@@ -38,7 +38,11 @@ function bodyFrame(frame, calib) {
     return { mid: calib.shoulderMid, sw: calib.shoulderWidth };
   }
   const p = frame.pose, L = p?.[11], R = p?.[12];
-  if (L && R) return { mid: [(L[0] + R[0]) / 2, (L[1] + R[1]) / 2], sw: Math.hypot(L[0] - R[0], L[1] - R[1]) || 0.2 };
+  // Gate on shoulder visibility, matching normHand / calibFromFrames — an occluded
+  // shoulder must NOT silently anchor the body frame.
+  if (L && R && (L[3] ?? 1) >= 0.5 && (R[3] ?? 1) >= 0.5) {
+    return { mid: [(L[0] + R[0]) / 2, (L[1] + R[1]) / 2], sw: Math.hypot(L[0] - R[0], L[1] - R[1]) || 0.2 };
+  }
   return null;
 }
 
@@ -70,8 +74,9 @@ export function normalizeSequence(frames, calib) {
 function shapeDist(a, b) {
   if (!a && !b) return 0;              // neither side carries a handshape -> nothing to diverge
   if (!a || !b) return W.shapeMissing; // one has a shape, the other doesn't
-  let s = 0; for (let i = 0; i < a.length; i++) s += dist2(a[i], b[i]);
-  return s / a.length;
+  const n = Math.min(a.length, b.length);
+  let s = 0; for (let i = 0; i < n; i++) s += dist2(a[i], b[i]);
+  return s / n;
 }
 
 /** Per-frame cost + a per-part breakdown (accumulated by scoreAttempt for feedback). */
@@ -99,7 +104,11 @@ const gradeFor = (score) =>
 export function scoreAttempt(attempt, attemptCalib, reference, refCalib) {
   const A = normalizeSequence(attempt, attemptCalib);
   const B = normalizeSequence(reference, refCalib);
+  const withHand = (seq) => seq.filter(f => f.R || f.L).length;
   if (A.length < 3 || B.length < 3) return { score: 0, grade: 'F', pass: false, distance: Infinity, feedback: ['Not enough frames captured.'] };
+  // A sequence of body-less / hand-less frames normalizes to all-null (frameCost 0),
+  // which would score a perfect match on garbage. Require real hand content on both.
+  if (withHand(A) < 3 || withHand(B) < 3) return { score: 0, grade: 'F', pass: false, distance: Infinity, feedback: ['No hands were clearly visible — step into frame and try again.'] };
 
   const acc = { R: { loc: 0, shape: 0, presence: 0, n: 0 }, L: { loc: 0, shape: 0, presence: 0, n: 0 } };
   const { normDistance } = dtw(A, B, (a, b) => frameCost(a, b, acc), { band: 0.25 });
@@ -136,7 +145,9 @@ export function verifyAgainstTarget(attempt, attemptCalib, targetLabel, template
   if (!target) return { score: 0, grade: 'F', pass: false, feedback: ['No reference for this sign yet.'], nearest: null };
   const scored = scoreAttempt(attempt, attemptCalib, target.frames, target.calibration);
   const { best } = classify(attempt, attemptCalib, templates);
-  const isNearest = best && best.label === targetLabel;
+  // Co-nearest counts: integer scores can tie, and classify's stable sort would arbitrarily
+  // put another sign first — don't reject a correctly-performed target on array order.
+  const isNearest = best && (best.label === targetLabel || best.score === scored.score);
   const pass = scored.pass && isNearest;
   const feedback = [...scored.feedback];
   if (scored.pass && !isNearest) feedback.push(`That looked more like "${best.label}" than "${targetLabel}".`);

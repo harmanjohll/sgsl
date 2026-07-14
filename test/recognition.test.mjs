@@ -114,5 +114,23 @@ const ref = makeSign({ shape: 'flat', path: 'wave' });
   check('normalized location is translation-invariant', d < 1e-9, `(d ${d})`);
 }
 
+// 10) all-hands-hidden attempt is rejected (not scored 100 on empty frames)
+{
+  const blank = Array.from({ length: 20 }, (_, i) => ({ t: i * 40, rightHand: null, leftHand: null,
+    pose: Array.from({ length: 33 }, () => [0.5, 0.9, 0, 0.1]) }));   // shoulders low-visibility
+  const r = scoreAttempt(blank, null, ref.frames, ref.calib);
+  check('hands-hidden attempt rejected', r.pass === false && r.score === 0, `(score ${r.score})`);
+}
+// 11) co-nearest tie does not falsely reject the prompted target
+{
+  const templates = [
+    { label: 'other', frames: makeSign({ shape: 'flat', path: 'wave' }).frames, calibration: CALIB },
+    { label: 'target', frames: ref.frames, calibration: ref.calib },   // identical to 'other'
+  ];
+  // performing the target: 'other' is an identical template so scores tie; target must still pass
+  const v = verifyAgainstTarget(ref.frames, ref.calib, 'target', templates);
+  check('tie with identical template still passes target', v.pass === true, `(score ${v.score}, nearest ${v.nearest})`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

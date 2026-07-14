@@ -70,6 +70,10 @@ export class LearnController {
     const lesson = this.lessons.find(l => l.id === id);
     if (!lesson) return null;
     const signs = lesson.signs.map(label => ({ label, available: this.available.has(label.toLowerCase()) }));
+    if (!signs.some(s => s.available)) {   // nothing recorded yet -> don't enter an empty lesson
+      this._status(`None of "${lesson.title}" is recorded yet — add these in Contribute.`);
+      return null;
+    }
     this.current = { lesson, idx: -1, signs };
     return this.next();
   }
