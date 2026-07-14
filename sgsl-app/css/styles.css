@@ -334,3 +334,22 @@ html, body {
 .advanced[open] > summary::before { content: '▾ '; }
 .advanced > summary::-webkit-details-marker { display: none; }
 .advanced .calib-panel { border: none; background: transparent; margin-top: 0; }
+
+/* ── Learn block ─────────────────────────────────────────── */
+.learn-head { display: flex; align-items: baseline; justify-content: space-between; }
+.learn-xp { font-size: 12px; color: var(--warning); font-weight: 600; }
+.lesson-list { display: flex; flex-direction: column; gap: 6px; }
+.lesson-card {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; color: var(--text); font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.lesson-card:hover { border-color: var(--accent); background: var(--border); }
+.lesson-title { font-weight: 600; font-size: 14px; }
+.lesson-sub { font-size: 12px; color: var(--text-dim); }
+.lesson-prog { font-size: 11px; color: var(--accent-bright); }
+.lesson-active { background: var(--surface2); border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.lesson-prompt { display: flex; align-items: baseline; gap: 10px; }
+.lesson-word { font-size: 26px; font-weight: 800; color: var(--accent-bright); }
+.lesson-count { font-size: 12px; color: var(--text-dim); margin-left: auto; }

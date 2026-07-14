@@ -89,7 +89,7 @@ async function main() {
     });
     await page.goto(`http://localhost:${PORT}/sgsl-app/`, { waitUntil: 'domcontentloaded' });
     // recorder.js (and the tracking pipeline) lazy-loads when the Record tab opens.
-    await page.click('.tab[data-tab="record"]');
+    await page.click('.tab[data-tab="contribute"]');
     // The whole pipeline: avatar boots AND the tracking worker reaches ready.
     await page.waitForFunction(() => window.__sgslWorkerReady === true, null, { timeout: 120000 });
     // Let it run a couple of seconds of fake-camera frames.
