@@ -1,13 +1,14 @@
 /* ============================================================
    SgSL — App Controller
    ============================================================
-   Tab switching + per-tab UI wiring. Three tabs:
-     - Sign It : text -> SgSL gloss -> chained avatar playback
-     - Record  : webcam -> MediaPipe Holistic -> record a sign
-     - Library : browse + play the recorded sign library
+   Two learner blocks + one contributor function:
+     - Learn      : text → sign. Guided lessons + type-anything + the
+                    library browser, all on ONE avatar (camera-off).
+     - Test       : sign → text. Camera on; perform a sign, get scored.
+     - Contribute : webcam → record a sign into the library.
 
-   Heavy modules (each owns a WebGL avatar) are lazy-initialised the
-   first time their tab is opened.
+   Heavy modules (each owns a WebGL avatar / camera) lazy-init the first
+   time their tab is opened.
    ============================================================ */
 
 import { Playback } from './player.js';
@@ -15,6 +16,7 @@ import * as signsSource from './signs-source.js';
 import { getEditsFor, saveEditsFor } from './sign-edits.js';
 import { signText, resolveLabels } from './sentence-engine.js';
 import { parseSentence } from './gloss.js';
+import { LearnController } from './learn.js';
 
 // ─── Tab switching ──────────────────────────────────────────
 const tabs = document.querySelectorAll('.tab');
@@ -26,10 +28,9 @@ tabs.forEach(tab => {
     tabs.forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     contents.forEach(c => c.classList.toggle('active', c.id === `tab-${target}`));
-
-    if (target === 'signit' && !signitLoaded) initSignIt();
-    if (target === 'library' && !libraryLoaded) initLibrary();
-    if (target === 'record' && !recorderLoaded) initRecorder();
+    if (target === 'learn' && !learnLoaded) initLearn();
+    if (target === 'test' && !testLoaded) initTest();
+    if (target === 'contribute' && !contributeLoaded) initContribute();
   });
 });
 
@@ -40,87 +41,83 @@ function setStatus(id, msg, type) {
   el.className = `status status-${type}`;
 }
 
-// ─── Sign It tab (text -> sign) ─────────────────────────────
-let signitLoaded = false;
-let signitPlayback = null;
+// ─── Learn block (lessons + type→sign + library, one avatar) ─
+let learnLoaded = false;
+let learnPlayback = null;
+let learn = null;
 
-function initSignIt() {
-  signitLoaded = true;
-  signitPlayback = new Playback('signit-viewport');
-  signitPlayback.on('status', (m, t) => setStatus('signit-status', m, t));
+async function initLearn() {
+  learnLoaded = true;
+  learnPlayback = new Playback('learn-viewport');
+  learnPlayback.on('status', (m, t) => setStatus('learn-status', m, t))
+    .on('progress', (fi, n) => {
+      const prog = document.getElementById('learn-progress-fill');
+      const info = document.getElementById('learn-frame-info');
+      if (prog) prog.style.width = `${(fi / Math.max(n - 1, 1)) * 100}%`;
+      if (info) info.textContent = `${fi + 1} / ${n}`;
+    });
 
-  const input = document.getElementById('signit-input');
-  const btn = document.getElementById('btn-signit-play');
-  const chips = document.getElementById('signit-chips');
+  // ── Guided lessons ──
+  learn = new LearnController(learnPlayback, { statusId: 'learn-status' });
+  await learn.load();
+  const lessonList = document.getElementById('learn-lessons');
+  const lessonPanel = document.getElementById('learn-lesson');
+  const prompt = document.getElementById('learn-prompt');
+  const showStep = (step) => {
+    if (!step || step.done) {
+      lessonPanel?.classList.add('hidden');
+      learn.renderLessonList(lessonList, startLesson);
+      return;
+    }
+    lessonPanel?.classList.remove('hidden');
+    if (prompt) prompt.innerHTML = `<span class="lesson-word">${step.label}</span><span class="lesson-count">${step.index + 1} / ${step.total}</span>`;
+  };
+  const startLesson = (id) => showStep(learn.startLesson(id));
+  learn.renderLessonList(lessonList, startLesson);
+  document.getElementById('btn-learn-practice')?.addEventListener('click', () => learn.replay());
+  document.getElementById('btn-learn-gotit')?.addEventListener('click', () => showStep(learn.gotIt()));
+  document.getElementById('btn-learn-exit')?.addEventListener('click', () => { learn.current = null; showStep({ done: true }); });
 
-  // Live coverage preview as the user types.
+  // ── Type → sign ──
+  const input = document.getElementById('learn-input');
+  const chips = document.getElementById('learn-chips');
   async function refreshChips() {
     const text = input?.value || '';
     if (!text.trim()) { if (chips) chips.innerHTML = ''; return; }
     const manifest = await signsSource.getManifest();
     const resolved = resolveLabels(parseSentence(text), manifest.map(s => s.label));
-    if (chips) {
-      chips.innerHTML = resolved.map(r =>
-        `<span class="chip ${r.available ? 'chip-on' : 'chip-off'}" title="${r.available ? 'in library' : 'not in library — will be skipped'}">${r.sign}</span>`
-      ).join('') || '<span class="hint">No signable tokens.</span>';
-    }
+    if (chips) chips.innerHTML = resolved.map(r =>
+      `<span class="chip ${r.available ? 'chip-on' : 'chip-off'}" title="${r.available ? 'in library' : 'not recorded yet — skipped'}">${r.sign}</span>`
+    ).join('') || '<span class="hint">No signable tokens.</span>';
   }
   input?.addEventListener('input', () => { clearTimeout(refreshChips._t); refreshChips._t = setTimeout(refreshChips, 200); });
-
-  async function play() {
+  async function playText() {
     const text = input?.value?.trim();
-    if (!text) { setStatus('signit-status', 'Type something for Fumi to sign.', 'error'); return; }
-    if (!signitPlayback.ready) { setStatus('signit-status', 'Avatar still loading…', 'loading'); }
-    setStatus('signit-status', 'Building sentence…', 'loading');
-    const resolved = await signText(text, signitPlayback);
+    if (!text) { setStatus('learn-status', 'Type something for Fumi to sign.', 'error'); return; }
+    setStatus('learn-status', 'Building sentence…', 'loading');
+    const resolved = await signText(text, learnPlayback);
     const have = resolved.filter(r => r.available).length;
-    if (!have) {
-      setStatus('signit-status', 'None of those words are in the library yet. Record them in the Record tab.', 'error');
-    } else {
-      const missing = resolved.filter(r => !r.available).map(r => r.sign);
-      setStatus('signit-status',
-        `Signing ${have} sign(s).` + (missing.length ? ` Skipped (not in library): ${missing.join(', ')}.` : ''),
-        'info');
-    }
+    const missing = resolved.filter(r => !r.available).map(r => r.sign);
+    setStatus('learn-status', have
+      ? `Signing ${have} sign(s).` + (missing.length ? ` Skipped: ${missing.join(', ')}.` : '')
+      : 'None of those words are in the library yet — record them in Contribute.', have ? 'info' : 'error');
     refreshChips();
   }
+  document.getElementById('btn-learn-sign')?.addEventListener('click', playText);
+  input?.addEventListener('keydown', e => { if (e.key === 'Enter') playText(); });
 
-  btn?.addEventListener('click', play);
-  input?.addEventListener('keydown', e => { if (e.key === 'Enter') play(); });
-
-  document.getElementById('btn-signit-replay')?.addEventListener('click', () => signitPlayback.replay());
-  document.getElementById('btn-signit-stop')?.addEventListener('click', () => signitPlayback.stop());
-  wireSpeed('signit-speed', 'signit-speed-label', signitPlayback);
-
-  setStatus('signit-status', 'Type a word or phrase and press Sign.', 'info');
-}
-
-// ─── Library tab ────────────────────────────────────────────
-let libraryLoaded = false;
-let libraryPlayback = null;
-
-async function initLibrary() {
-  libraryLoaded = true;
-  libraryPlayback = new Playback('lib-viewport');
-  libraryPlayback.on('status', (m, t) => setStatus('lib-status', m, t))
-    .on('progress', (fi, n) => {
-      const prog = document.getElementById('lib-progress-fill');
-      const info = document.getElementById('lib-frame-info');
-      if (prog) prog.style.width = `${(fi / Math.max(n - 1, 1)) * 100}%`;
-      if (info) info.textContent = `${fi + 1} / ${n}`;
-    });
-
-  await renderLibraryList();
-
-  document.getElementById('btn-lib-replay')?.addEventListener('click', () => libraryPlayback.replay());
-  document.getElementById('btn-lib-pause')?.addEventListener('click', () => libraryPlayback.togglePause());
-  document.getElementById('btn-lib-stop')?.addEventListener('click', () => libraryPlayback.stop());
-  wireSpeed('lib-speed', 'lib-speed-label', libraryPlayback);
+  // ── Playback controls + library ──
+  document.getElementById('btn-learn-replay')?.addEventListener('click', () => learnPlayback.replay());
+  document.getElementById('btn-learn-stop')?.addEventListener('click', () => learnPlayback.stop());
+  wireSpeed('learn-speed', 'learn-speed-label', learnPlayback);
+  wireEditPanel(() => learnPlayback);
+  await renderLibraryList('learn-list', learnPlayback);
 }
 
 // ── Per-sign edit panel (trim/speed overlay; replays live on change) ─────────
 let editLabel = null;
 let editReplayTimer = null;
+let editPlaybackRef = () => null;
 function selectSignForEdit(label) {
   editLabel = label;
   const panel = document.getElementById('lib-edit');
@@ -138,7 +135,8 @@ function setEditControl(id, value, fmt) {
   if (el) el.value = value;
   if (lb) lb.textContent = fmt(Number(value));
 }
-function wireEditPanel() {
+function wireEditPanel(playbackRef) {
+  editPlaybackRef = playbackRef;
   const read = () => ({
     trimStartMs: Number(document.getElementById('lib-trim-start')?.value || 0),
     trimEndMs: Number(document.getElementById('lib-trim-end')?.value || 0),
@@ -151,9 +149,8 @@ function wireEditPanel() {
       if (lb) lb.textContent = fmt(Number(el.value));
       if (!editLabel) return;
       saveEditsFor(editLabel, read());
-      // debounce the replay so dragging a slider doesn't restart per tick
       clearTimeout(editReplayTimer);
-      editReplayTimer = setTimeout(() => libraryPlayback.playLabel(editLabel), 250);
+      editReplayTimer = setTimeout(() => editPlaybackRef()?.playLabel(editLabel), 250);
     });
   };
   onChange('lib-trim-start', (v) => `${(v / 1000).toFixed(2)}s`);
@@ -163,27 +160,21 @@ function wireEditPanel() {
     if (!editLabel) return;
     saveEditsFor(editLabel, null);
     selectSignForEdit(editLabel);
-    libraryPlayback.playLabel(editLabel);
+    editPlaybackRef()?.playLabel(editLabel);
   });
 }
-wireEditPanel();
 
-async function renderLibraryList() {
-  const list = document.getElementById('lib-sign-list');
+async function renderLibraryList(listId, playback) {
+  const list = document.getElementById(listId);
   if (!list) return;
   let manifest = [];
   try { manifest = await signsSource.getManifest(); }
-  catch (err) { setStatus('lib-status', `Failed to load signs: ${err.message}`, 'error'); return; }
-
+  catch (err) { setStatus('learn-status', `Failed to load signs: ${err.message}`, 'error'); return; }
   list.innerHTML = '';
-  if (!manifest.length) {
-    list.innerHTML = '<p class="hint">No signs yet. Record one in the Record tab.</p>';
-    return;
-  }
+  if (!manifest.length) { list.innerHTML = '<p class="hint">No signs yet. Record one in Contribute.</p>'; return; }
   for (const s of manifest) {
     const row = document.createElement('div');
     row.className = 'sign-row';
-
     const btn = document.createElement('button');
     btn.className = 'sign-btn';
     btn.textContent = s.label;
@@ -192,16 +183,12 @@ async function renderLibraryList() {
       list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       selectSignForEdit(s.label);
-      libraryPlayback.playLabel(s.label);
+      playback.playLabel(s.label);
     });
-
     const tag = document.createElement('span');
     tag.className = `src-tag src-${s.source}`;
     tag.textContent = s.source === 'local' ? 'device' : s.source;
-
-    row.appendChild(btn);
-    row.appendChild(tag);
-
+    row.appendChild(btn); row.appendChild(tag);
     const del = document.createElement('button');
     del.className = 'sign-del';
     del.textContent = '×';
@@ -211,29 +198,81 @@ async function renderLibraryList() {
         e.stopPropagation();
         if (!confirm(`Delete your device recording of "${s.label}"?`)) return;
         const res = await signsSource.deleteSign(s.label);
-        if (res.ok) { row.remove(); setStatus('lib-status', `"${s.label}" removed from this device.`, 'info'); }
+        if (res.ok) { row.remove(); setStatus('learn-status', `"${s.label}" removed from this device.`, 'info'); }
       });
     } else {
-      // Built-in signs can't be deleted (static files) — hide them locally instead.
       del.title = `Hide built-in "${s.label}"`;
       del.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!confirm(`Hide the built-in sign "${s.label}"? (Recording it again brings it back.)`)) return;
-        signsSource.hideSign(s.label);
-        row.remove();
-        setStatus('lib-status', `"${s.label}" hidden.`, 'info');
+        signsSource.hideSign(s.label); row.remove();
+        setStatus('learn-status', `"${s.label}" hidden.`, 'info');
       });
     }
     row.appendChild(del);
     list.appendChild(row);
   }
-  setStatus('lib-status', `${manifest.length} signs loaded. Click one to play.`, 'success');
 }
 
-// ─── Record tab ─────────────────────────────────────────────
-let recorderLoaded = false;
-async function initRecorder() {
-  recorderLoaded = true;
+// ─── Test block (sign → text) ───────────────────────────────
+let testLoaded = false;
+let testCtl = null;
+let testSession = { attempts: 0, passed: 0 };
+async function initTest() {
+  testLoaded = true;
+  const { TestController } = await import('./test-mode.js');
+  testCtl = new TestController({
+    viewportId: 'test-viewport', videoId: 'test-video', statusId: 'test-status',
+    onResult: (v) => {
+      testSession.attempts++; if (v.pass) testSession.passed++;
+      const res = document.getElementById('test-result');
+      if (res) res.innerHTML = `<span class="q-grade ${v.pass ? 'q-good' : 'q-bad'}">${v.grade}</span>`
+        + `<span class="q-overall-text">${v.score}/100 · ${v.feedback.join(' ')}</span>`;
+      setStatus('test-score', `Session: ${testSession.passed}/${testSession.attempts} passed.`, 'info');
+    },
+  });
+
+  const startBtn = document.getElementById('btn-test-start');
+  const attemptBtn = document.getElementById('btn-test-attempt');
+  const doneBtn = document.getElementById('btn-test-done');
+  startBtn?.addEventListener('click', async () => {
+    startBtn.disabled = true;
+    setStatus('test-status', 'Starting camera…', 'loading');
+    const ok = await testCtl.start();
+    document.getElementById('test-camera-status')?.classList.add('hidden');
+    if (!ok) { startBtn.disabled = false; return; }
+    const labels = await testCtl.loadTemplates();
+    renderTestList(labels);
+  });
+  attemptBtn?.addEventListener('click', () => { testCtl.beginAttempt(); doneBtn.disabled = false; });
+  doneBtn?.addEventListener('click', () => testCtl.endAttempt());
+
+  function renderTestList(labels) {
+    const list = document.getElementById('test-signlist');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!labels.length) { list.innerHTML = '<p class="hint">No testable signs yet. Record some in Contribute (they need the new format).</p>'; return; }
+    for (const label of labels) {
+      const btn = document.createElement('button');
+      btn.className = 'sign-btn';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        testCtl.setTarget(label);
+        attemptBtn.disabled = false;
+        setStatus('test-status', `Ready — press "Sign the word" and perform "${label}".`, 'info');
+      });
+      list.appendChild(btn);
+    }
+    setStatus('test-status', `${labels.length} testable sign(s). Pick one.`, 'success');
+  }
+}
+
+// ─── Contribute (record) ────────────────────────────────────
+let contributeLoaded = false;
+async function initContribute() {
+  contributeLoaded = true;
   await import('./recorder.js');
 }
 
@@ -249,5 +288,5 @@ function wireSpeed(sliderId, labelId, playback) {
   });
 }
 
-// Open Sign-It by default.
-initSignIt();
+// Open Learn by default.
+initLearn();

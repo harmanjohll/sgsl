@@ -1,0 +1,8 @@
+{
+  "lessons": [
+    { "id": "numbers", "title": "Numbers 1–5", "blurb": "Count on one hand.", "signs": ["one", "two", "three", "four", "five"] },
+    { "id": "fingerspell", "title": "Fingerspelling", "blurb": "Handshapes for letters.", "signs": ["b", "c", "d", "h", "k"] },
+    { "id": "greetings", "title": "Greetings & courtesy", "blurb": "The essentials.", "signs": ["hi", "thank_you", "please", "sorry", "good"] },
+    { "id": "everyday", "title": "Everyday words", "blurb": "Build a sentence.", "signs": ["i", "you", "meet", "time", "what"] }
+  ]
+}
