@@ -31,8 +31,8 @@ function calibFromFrames(frames) {
 const isTestable = (rec) => !!(rec && Array.isArray(rec.landmarks) && rec.landmarks.some(f => f && f.pose));
 
 export class TestController {
-  constructor({ viewportId, videoId, statusId, onResult = () => {} }) {
-    this.viewportId = viewportId; this.videoId = videoId; this.statusId = statusId; this.onResult = onResult;
+  constructor({ viewportId, videoId, overlayId = null, statusId, onResult = () => {} }) {
+    this.viewportId = viewportId; this.videoId = videoId; this.overlayId = overlayId; this.statusId = statusId; this.onResult = onResult;
     this.core = null;
     this.templates = [];       // [{label, frames, calibration}]
     this.target = null;
@@ -40,7 +40,11 @@ export class TestController {
     this._buf = [];
     this._cut = null;
     this._start = 0;
+    this._level = 'normal';     // scoring strictness: easy | normal | strict
   }
+
+  /** Set scoring strictness (the "allowance for deviation" knob). */
+  setStrictness(level) { this._level = level; }
 
   _status(m, t = 'info') { const el = document.getElementById(this.statusId); if (el) { el.textContent = m; el.className = `status status-${t}`; } }
 
@@ -58,12 +62,12 @@ export class TestController {
 
   async start() {
     this.core = new TrackingCore({
-      videoId: this.videoId, viewportId: this.viewportId,
+      videoId: this.videoId, viewportId: this.viewportId, overlayId: this.overlayId,
       onFrame: (results, frame) => this._onFrame(results, frame),
       onStatus: (m) => this._status(m, 'loading'),
     });
     const ok = await this.core.start();
-    this._status(ok ? 'Camera ready. Pick a sign and press "Start attempt".' : 'Camera/tracking failed.', ok ? 'info' : 'error');
+    this._status(ok ? 'Camera ready — check your hand skeleton is tracking, pick a sign, then press "Sign the word".' : 'Camera/tracking failed.', ok ? 'info' : 'error');
     return ok;
   }
 
@@ -92,7 +96,7 @@ export class TestController {
     if (!frames || frames.length < 5) { this._status('Attempt too short — try again.', 'error'); return; }
     const calib = calibFromFrames(frames);
     if (!calib) { this._status('Could not see your shoulders — step back and try again.', 'error'); return; }
-    const verdict = verifyAgainstTarget(frames, calib, this.target, this.templates);
+    const verdict = verifyAgainstTarget(frames, calib, this.target, this.templates, this._level);
     this._status(`${verdict.pass ? '✅' : '❌'} ${this.target}: ${verdict.grade} (${verdict.score}/100)`, verdict.pass ? 'success' : 'error');
     this.onResult(verdict);
   }

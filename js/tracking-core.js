@@ -23,9 +23,22 @@ const HAND_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const SWAP_HANDEDNESS = false;
 
+// Standard 21-point MediaPipe hand topology — the finger "bones" drawn between joints.
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],        // thumb
+  [0, 5], [5, 6], [6, 7], [7, 8],        // index
+  [5, 9], [9, 10], [10, 11], [11, 12],   // middle
+  [9, 13], [13, 14], [14, 15], [15, 16], // ring
+  [13, 17], [17, 18], [18, 19], [19, 20],// pinky
+  [0, 17],                               // palm base
+];
+// Upper-body pose "bones": shoulders → elbows → wrists (indices per BlazePose).
+const ARM_PAIRS = [[11, 13], [13, 15], [12, 14], [14, 16], [11, 12]];
+
 export class TrackingCore {
-  constructor({ videoId, viewportId, onFrame = () => {}, onStatus = () => {} }) {
+  constructor({ videoId, viewportId, overlayId = null, onFrame = () => {}, onStatus = () => {} }) {
     this.video = document.getElementById(videoId);
+    this.overlay = overlayId ? document.getElementById(overlayId) : null;
     this.avatar = new SMPLXAvatar(viewportId);
     this.retarget = new SMPLXRetarget();
     this.retarget.setVideo(this.video);
@@ -57,6 +70,7 @@ export class TrackingCore {
     try { this._camera?.stop?.(); } catch {}
     try { this._stream?.getTracks().forEach((t) => t.stop()); } catch {}
     if (this.video) this.video.srcObject = null;
+    if (this.overlay) { try { this.overlay.getContext('2d').clearRect(0, 0, this.overlay.width, this.overlay.height); } catch {} }
     this._worker = null; this._camera = null; this.ready = false;
   }
 
@@ -64,8 +78,56 @@ export class TrackingCore {
     if (this._stopped) return;
     this._merge(results, this._lastHand);
     if (this.avatar?.vrm) this.retarget.applyFromMediaPipe(this.avatar.vrm, results);
+    // Draw the finger/bone tracker over the camera feed EVERY frame (not only during an
+    // attempt), so the user has live proof their hands are tracked before they even sign.
+    if (this.overlay) this._drawOverlay(results);
     // extractFrame AFTER the drive so any consumer scoring sees the same data the avatar did.
     this.onFrame(results, extractFrame(results));
+  }
+
+  /** Hands (joint dots + finger bones) + arm bones on the camera overlay canvas.
+   *  Draws in raw normalized landmark coords; the canvas carries the selfie mirror
+   *  via the `.rec-overlay` CSS class, exactly like the recorder's overlay. */
+  _drawOverlay(results) {
+    const canvas = this.overlay, video = this.video;
+    if (!canvas || !video) return;
+    const w = canvas.width = video.videoWidth || 640;
+    const h = canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+
+    const drawHand = (lms, color) => {
+      if (!lms) return;
+      ctx.strokeStyle = color; ctx.lineWidth = 2;
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const la = lms[a], lb = lms[b];
+        if (!la || !lb) continue;
+        ctx.beginPath();
+        ctx.moveTo(la.x * w, la.y * h);
+        ctx.lineTo(lb.x * w, lb.y * h);
+        ctx.stroke();
+      }
+      ctx.fillStyle = color;
+      for (const lm of lms) {
+        ctx.beginPath();
+        ctx.arc(lm.x * w, lm.y * h, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+    drawHand(results.rightHandLandmarks, '#00ff88');
+    drawHand(results.leftHandLandmarks, '#ff8800');
+
+    if (results.poseLandmarks) {
+      ctx.strokeStyle = '#4488ff'; ctx.lineWidth = 2;
+      for (const [a, b] of ARM_PAIRS) {
+        const la = results.poseLandmarks[a], lb = results.poseLandmarks[b];
+        if (!la || !lb) continue;
+        ctx.beginPath();
+        ctx.moveTo(la.x * w, la.y * h);
+        ctx.lineTo(lb.x * w, lb.y * h);
+        ctx.stroke();
+      }
+    }
   }
 
   async _startWorker() {
