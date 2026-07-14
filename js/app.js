@@ -22,17 +22,30 @@ import { LearnController } from './learn.js';
 const tabs = document.querySelectorAll('.tab');
 const contents = document.querySelectorAll('.tab-content');
 
+let activeTab = 'learn';
 tabs.forEach(tab => {
   tab.addEventListener('click', () => {
     const target = tab.dataset.tab;
+    // Release the Test camera+worker when leaving Test — otherwise it keeps running and,
+    // opening Contribute, a SECOND camera+worker would spin up on the same device.
+    if (activeTab === 'test' && target !== 'test') { testCtl?.stop(); resetTestUI(); }
     tabs.forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     contents.forEach(c => c.classList.toggle('active', c.id === `tab-${target}`));
     if (target === 'learn' && !learnLoaded) initLearn();
-    if (target === 'test' && !testLoaded) initTest();
+    if (target === 'test') { if (!testLoaded) initTest(); else resetTestUI(); }
     if (target === 'contribute' && !contributeLoaded) initContribute();
+    activeTab = target;
   });
 });
+
+// Reset the Test controls to their pre-camera state (start enabled, attempt/done off).
+function resetTestUI() {
+  const b = (id, dis) => { const el = document.getElementById(id); if (el) el.disabled = dis; };
+  b('btn-test-start', false); b('btn-test-attempt', true); b('btn-test-done', true);
+  document.getElementById('test-camera-status')?.classList.remove('hidden');
+  setStatus('test-status', 'Camera stopped. Press "Start camera" to test again.', 'info');
+}
 
 function setStatus(id, msg, type) {
   const el = document.getElementById(id);
@@ -72,7 +85,7 @@ async function initLearn() {
     lessonPanel?.classList.remove('hidden');
     if (prompt) prompt.innerHTML = `<span class="lesson-word">${step.label}</span><span class="lesson-count">${step.index + 1} / ${step.total}</span>`;
   };
-  const startLesson = (id) => showStep(learn.startLesson(id));
+  const startLesson = (id) => { const step = learn.startLesson(id); if (step) showStep(step); };
   learn.renderLessonList(lessonList, startLesson);
   document.getElementById('btn-learn-practice')?.addEventListener('click', () => learn.replay());
   document.getElementById('btn-learn-gotit')?.addEventListener('click', () => showStep(learn.gotIt()));
@@ -287,6 +300,9 @@ function wireSpeed(sliderId, labelId, playback) {
     if (label) label.textContent = `${s.toFixed(1)}x`;
   });
 }
+
+// Release the camera if the page is hidden/closed (privacy + no zombie stream).
+window.addEventListener('pagehide', () => testCtl?.stop());
 
 // Open Learn by default.
 initLearn();
