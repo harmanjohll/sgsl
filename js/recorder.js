@@ -17,13 +17,13 @@ import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { AutoCut, trimFrames } from './autocut.js';
 import { toResults } from './tasks-adapter.js';
-import { solveOrientationOffset } from './autotune.js';
+import { createAutoTuner } from './autotune-driver.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
 import { exportSign, importFile } from './export-import.js';
 import { reconstructionError } from './metrics.js';
-import { loadFineTune } from './calib-profile.js';
+import { loadFineTune, calibDefaultsFor, loadDeviceCalibSettings, saveDeviceCalibSettings } from './calib-profile.js';
 
 // ─── State ──────────────────────────────────────────────────
 let avatar = null;
@@ -57,23 +57,9 @@ let lastFidelity = null;
 let fidelityTolerance = 8;   // % of shoulder-width; the "margin of error"
 let inited = false;
 
-// Manual calibration (user sliders), persisted across sessions. Defaults reproduce the
-// current render exactly (180° roll, gains 1, thumb 0°, reach = engine constants).
-const CALIB_KEY = 'sgsl.calib.v1';
-// Calibrated baseline (tuned live by the signer, 2026-06). New users + Reset start here.
-const CALIB_DEFAULTS = {
-  rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true,   // orientation
-  deformGuard: true,                                 // anatomical clamps (anti-deformation)
-  curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25,    // fingers
-  thumbCurl: 1.00, thumbSpread: 1.00,                // thumb (decoupled from fingers)
-  reachDepth: 0.90, reachGain: 1.00,                 // reach
-  guardStrictness: 1,                                // deformation-guard strength
-  smoothing: 0.5,                                    // stability (lerps are rate-compensated now)
-};
-// IDENTICAL defaults for both sides: the measured and rig rest bases are chirality-paired
-// per side, so the correction does not mirror (the mirrored-Left experiment measurably
-// hurt the left hand and is reverted; the rendered-thumb harness scenarios pin this).
-const calibDefaultsFor = (_side) => ({ ...CALIB_DEFAULTS });
+// Manual calibration (user sliders), persisted across sessions. Defaults, migrations
+// and the sgsl.calib.v1 read/write live in calib-profile.js (single owner) — the Test
+// tab's "Calibrate hands" writes the same blob through the same module.
 // Auto-cut: end the recording automatically when the sign is done (motion drops +
 // signer returns to rest), and trim leading/trailing idle. See autocut.js.
 const AUTOCUT_KEY = 'sgsl.autocut.v1';
@@ -94,9 +80,8 @@ let previewing = false;
 const autoBodyCal = { samples: [], done: false };
 
 // Guided hand auto-tune: solve the 3-DOF orientation calibration per hand from the raw
-// measured basis while the signer holds a flat palm to the camera (see autotune.js).
-const AUTOTUNE_SAMPLES = 30;
-let autoTune = null;   // { side: 'Right'|'Left', samples: [] } while active
+// measured basis while the signer holds a flat palm to the camera (autotune-driver.js).
+let autoTuner = null;   // createAutoTuner instance while active
 let refreshCalibUI = null;   // set by wireCalibControls; re-syncs sliders to calibSettings
 
 let calibSide = 'Right';   // which hand the calibration sliders currently edit
@@ -219,10 +204,22 @@ export function suspend() {
   releaseCamera();
 }
 
+/** Re-apply device tuning + global fine-tune to the live mirror (the header ⚙
+ *  popover calls this so slider changes show up without restarting the camera). */
+export function reapplyCalibration() {
+  if (inited) applyCalibSettings();
+}
+
 export async function resume() {
   if (!inited) return init();
   if (!suspended) return;
   suspended = false;
+  // The Test tab's "Calibrate hands" also writes sgsl.calib.v1 — refresh the cached
+  // settings on re-entry, or the next slider touch here would save stale values back
+  // over the just-completed calibration (and the mirror would render the old tuning).
+  loadCalibSettings();
+  applyCalibSettings();
+  refreshCalibUI?.();
   const videoEl = document.getElementById('rec-video');
   const statusEl = document.getElementById('rec-camera-status');
   try {
@@ -554,7 +551,7 @@ function onHolisticResults(results) {
   if (dbg && retarget._lastDebug) dbg.textContent = retarget._lastDebug;
 
   maybeAutoBodyCalibrate(results);
-  maybeAutoTune(results);
+  autoTuner?.feed(results);
 
   // 4) Capture: record frame or calibration sample.
   const frame = extractFrame(results);
@@ -667,62 +664,28 @@ function maybeAutoBodyCalibrate(results) {
   setRecStatus('Auto-calibrated from your pose — you can Record. (Use Calibrate to redo it deliberately.)', 'info');
 }
 
-// Guided per-hand orientation solve: collect raw bases while the pose is held flat +
-// confident, then set the roll/pitch/yaw sliders mathematically.
-function maybeAutoTune(results) {
-  if (!autoTune) return;
-  const side = autoTune.side;
-  const world = side === 'Right' ? results.rightHandWorldLandmarks : results.leftHandWorldLandmarks;
-  const dbg = retarget?._handDbg?.[side];
-  const raw = retarget?._rawBasis?.[side];
-  // Sample only clean canonical frames: confident winding (not edge-on) + flat hand.
-  if (world?.length >= 21 && raw && dbg && Math.abs(dbg.wind) > 0.35 && dbg.curl < 25) {
-    autoTune.samples.push(raw);
-    if (autoTune.samples.length % 10 === 0 && autoTune.samples.length < AUTOTUNE_SAMPLES) {
-      setRecStatus(`Auto-tune (${side}): capturing… ${autoTune.samples.length}/${AUTOTUNE_SAMPLES}. Hold steady.`, 'loading');
-    }
-  }
-  if (autoTune.samples.length < AUTOTUNE_SAMPLES) return;
-
-  // Expected calibrated basis: identity for Right; for Left the rig-paired canonical
-  // flat palm sits at rotY(180°) (see WIND_SIGN comment in retarget.js) — without this
-  // the left solve reads as a ~180° roll and the inversion guard rejects it.
-  const expected = side === 'Left' ? [0, 1, 0, 0] : [0, 0, 0, 1];
-  const solved = solveOrientationOffset(autoTune.samples, expected);
-  if (Math.abs(solved.rollDeg) > 135) {
-    // A near-180° solve means the measured basis is facing-INVERTED — a chirality/
-    // winding regression, not a tuning offset. Refuse rather than bake it in.
-    autoTune = null; syncAutoTuneBtn();
-    setRecStatus(`Auto-tune (${side}): the captured palm reads facing-inverted (roll ${Math.round(solved.rollDeg)}°) — check the Wrist rotation toggle, and report this if it persists.`, 'error');
-    return;
-  }
-  if (solved.spreadDeg > 25) {
-    // Hand wasn't steady — retry this side rather than bake a bad calibration.
-    autoTune.samples = [];
-    setRecStatus(`Auto-tune (${side}): the hand moved too much (±${Math.round(solved.spreadDeg)}°) — hold it steadier, flat to the camera.`, 'error');
-    return;
-  }
-  const clampDeg = (v, lim) => Math.max(-lim, Math.min(lim, Math.round(v / 5) * 5));
-  calibSettings[side] = {
-    ...calibSettings[side],
-    rollDeg: clampDeg(solved.rollDeg, 180),
-    pitchDeg: clampDeg(solved.pitchDeg, 90),
-    yawDeg: clampDeg(solved.yawDeg, 90),
-  };
-  applyCalibSettings(); saveCalibSettings(); refreshCalibUI?.();
-  if (side === 'Right') {
-    autoTune = { side: 'Left', samples: [] };
-    setRecStatus(`Right hand tuned (roll ${calibSettings.Right.rollDeg}° pitch ${calibSettings.Right.pitchDeg}° yaw ${calibSettings.Right.yawDeg}°). Now your LEFT hand: flat palm to the camera, fingers up.`, 'success');
-  } else {
-    autoTune = null;
-    syncAutoTuneBtn();
-    setRecStatus(`Both hands auto-tuned. If anything looks off, Reset calibration or re-run Auto-tune.`, 'success');
-  }
+// Guided per-hand orientation solve — the shared driver (autotune-driver.js) does the
+// sampling/guards/solve; these callbacks bind it to the recorder's settings + status UI.
+function startAutoTune() {
+  autoTuner = createAutoTuner({
+    retarget,
+    onStatus: (m) => setRecStatus(m, 'loading'),
+    onSolved: (side, tuned) => {
+      calibSettings[side] = { ...calibSettings[side], ...tuned };
+      applyCalibSettings(); saveCalibSettings(); refreshCalibUI?.();
+      if (side === 'Left') setRecStatus('Both hands auto-tuned. If anything looks off, Reset calibration or re-run Auto-tune.', 'success');
+    },
+    onDone: () => { autoTuner = null; syncAutoTuneBtn(); },
+    onError: (m, { retrying }) => {
+      if (!retrying) { autoTuner = null; syncAutoTuneBtn(); }
+      setRecStatus(m, 'error');
+    },
+  });
 }
 
 function syncAutoTuneBtn() {
   const b = document.getElementById('btn-autotune');
-  if (b) b.textContent = autoTune ? '✨ Auto-tune: cancel' : '✨ Auto-tune hands';
+  if (b) b.textContent = autoTuner ? '✨ Auto-tune: cancel' : '✨ Auto-tune hands';
 }
 
 function finishCalibration() {
@@ -1206,49 +1169,17 @@ function discardRecording() {
 }
 
 // ─── Manual calibration + stability + data capture ──────────
-const mergeSide = (src) => {   // fill a side from saved values, falling back to CALIB_DEFAULTS
-  const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
-  const out = {};
-  for (const k of Object.keys(CALIB_DEFAULTS)) {
-    const d = CALIB_DEFAULTS[k];
-    out[k] = (typeof d === 'boolean') ? (typeof src?.[k] === 'boolean' ? src[k] : d) : num(src?.[k], d);
-  }
-  return out;
-};
-// Settings saved before the winding flip-parity fix (calib schema v2) carry a rollDeg that
-// was compensating a ~180° palm negation that no longer happens — shift it by 180° so the
-// user's tuned look is preserved. Normalized to (-180, 180].
-const migrateRoll = (side) => { side.rollDeg = ((side.rollDeg + 180 + 180) % 360) - 180; return side; };
-// A pre-v2 side whose values still sat at the OLD shipped defaults was never really tuned —
-// give it the NEW side-correct defaults instead of a blind roll-shift.
-const wasOldDefaults = (c) => c && Math.abs(c.rollDeg - (-170)) < 1e-6 && Math.abs((c.yawDeg ?? 25) - 25) < 1e-6 && Math.abs((c.thumbDeg ?? 25) - 25) < 1e-6;
+// Persistence + migrations live in calib-profile.js (single owner of sgsl.calib.v1).
 function loadCalibSettings() {
-  try {
-    const s = JSON.parse(localStorage.getItem(CALIB_KEY));
-    if (!s || typeof s !== 'object') return;
-    const v = s.v || 1;
-    const migrate = (saved, side) => {
-      if (v >= 2) return mergeSide(saved);
-      if (!saved || wasOldDefaults(saved)) return calibDefaultsFor(side);
-      return migrateRoll(mergeSide(saved));
-    };
-    if (s.Right || s.Left) {                       // per-side format
-      calibSettings = { Right: migrate(s.Right, 'Right'), Left: migrate(s.Left, 'Left') };
-      if (s.side === 'Left' || s.side === 'Right') calibSide = s.side;
-    } else {                                       // migrate old single-set format → both hands
-      calibSettings = { Right: migrate(s, 'Right'), Left: migrate({ ...s }, 'Left') };
-    }
-    // v3: the LEFT defaults shipped mirrored for a while (a regression — see retarget.js
-    // WIND_SIGN comment), so any left tuning from that era fought a ~50° baseline error.
-    // Reset Left to the corrected (identical-to-right) defaults.
-    if (v < 3) {
-      calibSettings.Left = calibDefaultsFor('Left');
-      setTimeout(() => setRecStatus('Left-hand calibration was reset (left-defaults fix). Re-run ✨ Auto-tune if needed.', 'info'), 1500);
-    }
-  } catch { /* ignore corrupt/absent settings */ }
+  const { settings, side, migratedLeftReset } = loadDeviceCalibSettings();
+  calibSettings = settings;
+  calibSide = side;
+  if (migratedLeftReset) {
+    setTimeout(() => setRecStatus('Left-hand calibration was reset (left-defaults fix). Re-run ✨ Auto-tune if needed.', 'info'), 1500);
+  }
 }
 function saveCalibSettings() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calibSettings, side: calibSide, v: 3 })); } catch { /* private mode */ }
+  saveDeviceCalibSettings(calibSettings, calibSide);
 }
 function applyCalibSettings() {   // push BOTH hands' calibration to the retarget
   for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, calibSettings[side]);
@@ -1315,11 +1246,8 @@ function wireCalibControls() {
   });
   refreshCalibUI = () => syncs.forEach((s) => s());
   document.getElementById('btn-autotune')?.addEventListener('click', () => {
-    if (autoTune) { autoTune = null; setRecStatus('Auto-tune cancelled.', 'info'); }
-    else {
-      autoTune = { side: 'Right', samples: [] };
-      setRecStatus('Auto-tune: hold your RIGHT hand FLAT, palm facing the camera, fingers up.', 'loading');
-    }
+    if (autoTuner) { autoTuner.cancel(); autoTuner = null; setRecStatus('Auto-tune cancelled.', 'info'); }
+    else startAutoTune();
     syncAutoTuneBtn();
   });
   document.getElementById('btn-screenshot')?.addEventListener('click', captureScreenshot);
