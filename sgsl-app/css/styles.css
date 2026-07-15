@@ -101,6 +101,7 @@ html, body {
   transition: color 0.15s, background 0.15s;
 }
 .sign-del:hover { color: var(--error); background: rgba(238,102,102,0.15); }
+.sign-del.armed { color: #fff; background: var(--error); border-color: var(--error); }
 
 /* Viewer */
 .viewer {

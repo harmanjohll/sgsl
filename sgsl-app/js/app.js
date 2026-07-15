@@ -205,23 +205,38 @@ async function renderLibraryList(listId, playback) {
     const del = document.createElement('button');
     del.className = 'sign-del';
     del.textContent = '×';
-    if (s.source === 'local') {
-      del.title = `Delete local "${s.label}"`;
-      del.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (!confirm(`Delete your device recording of "${s.label}"?`)) return;
+    const isLocal = s.source === 'local';
+    const delTitle = isLocal
+      ? `Delete your device recording of "${s.label}"`
+      : `Hide "${s.label}" on this device`;
+    del.title = delTitle;
+    // Two-step inline confirm — NO native confirm(). A browser's "prevent this page
+    // from creating additional dialogs" tick makes confirm() always return false,
+    // which used to silently block deleting/hiding. First click arms (× → ✓),
+    // a second click within 3s performs it; otherwise it disarms.
+    let armTimer = null;
+    const disarm = () => {
+      del.classList.remove('armed'); del.textContent = '×'; del.title = delTitle;
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    };
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!del.classList.contains('armed')) {
+        del.classList.add('armed'); del.textContent = '✓';
+        del.title = `Click again to ${isLocal ? 'delete' : 'hide'} "${s.label}"`;
+        armTimer = setTimeout(disarm, 3000);
+        return;
+      }
+      disarm();
+      if (isLocal) {
         const res = await signsSource.deleteSign(s.label);
         if (res.ok) { row.remove(); setStatus('learn-status', `"${s.label}" removed from this device.`, 'info'); }
-      });
-    } else {
-      del.title = `Hide built-in "${s.label}"`;
-      del.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (!confirm(`Hide the built-in sign "${s.label}"? (Recording it again brings it back.)`)) return;
+        else setStatus('learn-status', `Couldn't remove "${s.label}".`, 'error');
+      } else {
         signsSource.hideSign(s.label); row.remove();
-        setStatus('learn-status', `"${s.label}" hidden.`, 'info');
-      });
-    }
+        setStatus('learn-status', `"${s.label}" hidden on this device.`, 'info');
+      }
+    });
     row.appendChild(del);
     list.appendChild(row);
   }

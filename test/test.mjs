@@ -91,7 +91,7 @@ function synthSign(positionAt, n = 21) {
 // ─── signs-source (static, stubbed fetch) ───────────────────
 {
   const manifest = await signsSource.getManifest();
-  check('signs-source: 8 library signs', manifest.length === 8);
+  check('signs-source: 3 base-set library signs', manifest.length === 3);
   check('signs-source: tagged library', manifest.every(s => s.source === 'library'));
   const one = await signsSource.getSign('one');
   check('signs-source: getSign("one") has 28 frames', (one.landmarks || []).length === 28);
