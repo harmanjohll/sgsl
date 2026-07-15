@@ -18,6 +18,7 @@ import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { toResults } from './tasks-adapter.js';
+import { configureRetarget } from './calib-profile.js';
 
 const HAND_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -43,6 +44,9 @@ export class TrackingCore {
     this.retarget = new SMPLXRetarget();
     this.retarget.setVideo(this.video);
     this.retarget.setAvatar(this.avatar);
+    // Same device hand tuning + global fine-tune as the Contribute mirror, so the
+    // Test avatar isn't a third, differently-calibrated rendering.
+    configureRetarget(this.retarget, {});
     this.onFrame = onFrame;
     this.onStatus = onStatus;
     this.trackerMode = new URLSearchParams(location.search).get('tracker') || 'worker';
@@ -69,9 +73,14 @@ export class TrackingCore {
     try { this._worker?.terminate(); } catch {}
     try { this._camera?.stop?.(); } catch {}
     try { this._stream?.getTracks().forEach((t) => t.stop()); } catch {}
+    try { this._hand?.close?.(); } catch {}
     if (this.video) this.video.srcObject = null;
     if (this.overlay) { try { this.overlay.getContext('2d').clearRect(0, 0, this.overlay.width, this.overlay.height); } catch {} }
-    this._worker = null; this._camera = null; this.ready = false;
+    // Each Test start builds a fresh core (fresh avatar + WebGLRenderer); without this
+    // the old GL contexts pile up until the browser starts killing them ("oldest
+    // context will be lost" → black avatar).
+    try { this.avatar?.dispose?.(); } catch {}
+    this._worker = null; this._camera = null; this._hand = null; this.ready = false;
   }
 
   _onResults(results) {

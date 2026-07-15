@@ -1,20 +1,29 @@
 [
   {
+    "label": "five",
+    "frames": 38,
+    "schema_version": 1,
+    "hands": true,
+    "tags": [
+      "numbers"
+    ]
+  },
+  {
     "label": "one",
     "frames": 28,
     "schema_version": 1,
-    "hands": true
+    "hands": true,
+    "tags": [
+      "numbers"
+    ]
   },
   {
     "label": "three",
     "frames": 73,
     "schema_version": 1,
-    "hands": true
-  },
-  {
-    "label": "five",
-    "frames": 38,
-    "schema_version": 1,
-    "hands": true
+    "hands": true,
+    "tags": [
+      "numbers"
+    ]
   }
 ]

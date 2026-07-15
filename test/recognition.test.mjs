@@ -144,5 +144,21 @@ const ref = makeSign({ shape: 'flat', path: 'wave' });
   check('strictness: default === normal', dflt === normal, `(default ${dflt} vs normal ${normal})`);
 }
 
+// 13) hand-only (v1) reference: no pose, no calibration — must still score on handshape.
+//     This is the shipped base set's format; before the loc-fallback these all F'd out
+//     with "No hands were clearly visible" and the Test tab had zero testable signs.
+{
+  const stripPose = (frames) => frames.map(f => ({ ...f, pose: null }));
+  const handOnlyRef = stripPose(ref.frames);
+  const good = scoreAttempt(ref.frames, ref.calib, handOnlyRef, null);
+  check('hand-only reference: same handshape passes', good.pass === true && good.score >= 70, `(score ${good.score})`);
+  const fist = makeSign({ shape: 'fist', path: 'wave' });
+  const bad = scoreAttempt(fist.frames, fist.calib, handOnlyRef, null);
+  check('hand-only reference: wrong handshape scores lower', bad.score < good.score - 10, `(bad ${bad.score} vs good ${good.score})`);
+  // and a hand-only ATTEMPT against a hand-only reference (both sides no body frame)
+  const both = scoreAttempt(stripPose(ref.frames), null, handOnlyRef, null);
+  check('hand-only vs hand-only: identical passes', both.pass === true, `(score ${both.score})`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

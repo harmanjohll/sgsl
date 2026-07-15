@@ -6,12 +6,16 @@
    raw). Applied at the signs-source.getSign choke point, so the
    Library player, Sign-It sentences, and previews all honor them.
 
-   Edit shape: { trimStartMs, trimEndMs, speed } (all optional).
+   Edit shape: { trimStartMs, trimEndMs, speed } (all optional), plus
+   optional per-sign RENDER fine-tune overrides { heightOffset,
+   reachDepth, reachGain, smoothing } consumed by calib-profile.js at
+   playback (they don't touch the frames, so applyEdits ignores them).
    applyEdits is a pure function -> unit-tested in Node.
    ============================================================ */
 
 const KEY = 'sgsl.sign-edits.v1';
 const MIN_FRAMES = 5;
+const TUNE_KEYS = ['heightOffset', 'reachDepth', 'reachGain', 'smoothing'];
 
 function loadAll() {
   try { return JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
@@ -25,7 +29,8 @@ export function getEditsFor(label) {
 
 export function saveEditsFor(label, edits) {
   const all = loadAll();
-  if (edits && (edits.trimStartMs || edits.trimEndMs || (edits.speed && edits.speed !== 1))) all[label] = edits;
+  const hasTune = edits && TUNE_KEYS.some(k => typeof edits[k] === 'number' && isFinite(edits[k]));
+  if (edits && (edits.trimStartMs || edits.trimEndMs || (edits.speed && edits.speed !== 1) || hasTune)) all[label] = edits;
   else delete all[label];
   try { localStorage.setItem(KEY, JSON.stringify(all)); } catch { /* private mode */ }
 }
