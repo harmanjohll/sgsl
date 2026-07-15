@@ -95,8 +95,9 @@ async function main() {
     // Let it run a couple of seconds of fake-camera frames.
     await page.waitForTimeout(2500);
     const debugText = await page.evaluate(() => document.getElementById('rec-debug')?.textContent || '');
-    ok = errors.length === 0;
-    console.log(`worker ready: yes | HUD alive: ${debugText.includes('Frame') ? 'yes' : 'no'} | page errors: ${errors.length}`);
+    const version = await page.evaluate(() => document.getElementById('app-version')?.textContent || '');
+    ok = errors.length === 0 && version.startsWith('v');
+    console.log(`worker ready: yes | HUD alive: ${debugText.includes('Frame') ? 'yes' : 'no'} | version: ${version || 'MISSING'} | page errors: ${errors.length}`);
     if (errors.length) console.log('errors:', errors.slice(0, 5));
   } finally {
     await browser.close();

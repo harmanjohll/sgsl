@@ -85,6 +85,9 @@ another.
 Push to `main` → `.github/workflows/deploy-pages.yml` uploads `sgsl-app/` to
 GitHub Pages → https://harmanjohll.github.io/sgsl/
 
+Before every deploy, bump `APP_VERSION` in `sgsl-app/js/app.js` — the header
+label is how users see that the live site has updated.
+
 ## Contributing signs
 
 See [CONTRIBUTING-SIGNS.md](CONTRIBUTING-SIGNS.md).
