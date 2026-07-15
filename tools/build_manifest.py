@@ -3,7 +3,8 @@
 Regenerate sgsl-app/signs/_manifest.json from the committed sign files.
 
 The manifest is what the app's signs-source reads to list the library:
-    [{ "label": str, "frames": int, "schema_version": int, "hands": bool }]
+    [{ "label": str, "frames": int, "schema_version": int, "hands": bool,
+       "tags": [str] }]
 
 Run this after adding/removing a sign JSON under sgsl-app/signs/:
     python tools/build_manifest.py
@@ -40,6 +41,7 @@ def main():
             "frames": len(frames),
             "schema_version": sign.get("schema_version", 1),
             "hands": has_hands,
+            "tags": sign.get("tags", []) or [],
         })
         print(f"  [ok] {name}: {len(frames)} frames")
 

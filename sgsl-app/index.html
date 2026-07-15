@@ -50,7 +50,7 @@
       <div id="learn-lesson" class="lesson-active hidden">
         <div id="learn-prompt" class="lesson-prompt"></div>
         <div class="rec-btn-row">
-          <button id="btn-learn-practice" class="btn">↻ Practice again</button>
+          <button id="btn-learn-practice" class="btn">▶ Play sign</button>
           <button id="btn-learn-gotit" class="btn btn-save">✓ Got it</button>
           <button id="btn-learn-exit" class="btn">Exit lesson</button>
         </div>
@@ -66,7 +66,9 @@
 
       <!-- Library browser -->
       <div class="calib-group-title">Library</div>
+      <div id="learn-tagbar" class="chips tagbar hidden"></div>
       <div id="learn-list" class="sign-list"><p class="hint">Loading signs…</p></div>
+      <p class="hint">Click a sign to select it, ▶ to play it. × removes it (click twice).</p>
 
       <div id="learn-status" class="status status-info">Pick a lesson, or type a word for Fumi to sign.</div>
     </section>
@@ -98,8 +100,50 @@
             <input type="range" id="lib-sign-speed" min="0.5" max="2" step="0.05" value="1">
             <span id="lib-sign-speed-label">1.00x</span>
           </label>
+          <label class="speed-control">Hand height:
+            <input type="range" id="lib-height" min="-0.5" max="0.5" step="0.02" value="0">
+            <span id="lib-height-label">0.00</span>
+          </label>
+          <label class="speed-control">Depth:
+            <input type="range" id="lib-depth" min="0.4" max="2.5" step="0.05" value="0.9">
+            <span id="lib-depth-label">0.90</span>
+          </label>
+          <label class="speed-control">Extension:
+            <input type="range" id="lib-ext" min="0.7" max="1.8" step="0.05" value="1">
+            <span id="lib-ext-label">1.00</span>
+          </label>
           <button id="lib-edit-reset" class="btn">Reset edits</button>
         </div>
+        <!-- Per-sign tags (editable for device recordings) -->
+        <div id="lib-tags-row" class="control-row hidden">
+          <span class="hint">Tags:</span>
+          <input type="text" id="lib-tags" class="rec-input" placeholder="tags, comma-separated">
+        </div>
+        <!-- Device-global avatar fine-tune: applies to playback AND both live mirrors -->
+        <details id="finetune-panel" class="advanced">
+          <summary>⚙ Fine-tune avatar (this device)</summary>
+          <div class="control-row">
+            <label class="speed-control">Hand height:
+              <input type="range" id="ft-height" min="-0.5" max="0.5" step="0.02" value="0">
+              <span id="ft-height-label">0.00</span>
+            </label>
+            <label class="speed-control">Depth:
+              <input type="range" id="ft-depth" min="0.4" max="2.5" step="0.05" value="0.9">
+              <span id="ft-depth-label">0.90</span>
+            </label>
+            <label class="speed-control">Extension:
+              <input type="range" id="ft-ext" min="0.7" max="1.8" step="0.05" value="1">
+              <span id="ft-ext-label">1.00</span>
+            </label>
+            <label class="speed-control">Smoothing:
+              <input type="range" id="ft-smooth" min="0" max="1" step="0.05" value="0.5">
+              <span id="ft-smooth-label">50%</span>
+            </label>
+            <button id="ft-reset" class="btn">Reset</button>
+          </div>
+          <p class="hint">Adjusts how signs render on this device — everywhere (Learn playback,
+            Test and Contribute mirrors). The per-sign sliders above override these for one sign.</p>
+        </details>
       </div>
     </section>
   </main>
@@ -122,7 +166,8 @@
           (or press <strong>I'm done</strong>).</li>
         <li>Read your <strong>grade</strong> and the tip on what to fix, then try again.</li>
       </ol>
-      <p class="hint">Only signs recorded in the new format can be tested.</p>
+      <p class="hint">Every library sign is testable. Older hand-only recordings are scored on
+        handshape; new-format recordings also score hand placement and movement.</p>
       <div class="rec-btn-row">
         <button id="btn-test-start" class="btn btn-record">Start camera</button>
         <button id="btn-test-attempt" class="btn" disabled>● Sign the word</button>
@@ -160,6 +205,10 @@
         <div class="rec-label-row">
           <label for="rec-label">Sign label:</label>
           <input type="text" id="rec-label" class="rec-input" placeholder="e.g. hello, thank_you">
+        </div>
+        <div class="rec-label-row">
+          <label for="rec-tags">Tags:</label>
+          <input type="text" id="rec-tags" class="rec-input" placeholder="e.g. numbers, greetings (comma-separated)">
         </div>
         <div class="rec-btn-row">
           <button id="btn-calibrate" class="btn" disabled>Calibrate (arms at sides)</button>

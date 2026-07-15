@@ -21,6 +21,8 @@ import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
+import { configureRetarget } from './calib-profile.js';
+import { getEditsFor } from './sign-edits.js';
 
 export class Playback {
   constructor(viewportId) {
@@ -77,6 +79,13 @@ export class Playback {
     const hasT = valid.every(f => typeof f.t === 'number');
     this.seq = hasT ? valid : valid.map((f, i) => ({ ...f, t: i * (1000 / 30) }));
 
+    // Congruence: replay with the calibration the sign was RECORDED under (playLabel
+    // stages it), or the device baseline for direct sequences (sentences) — never
+    // whatever tuning the previous clip left behind.
+    const profile = this._pendingProfile || {};
+    this._pendingProfile = null;
+    configureRetarget(this.retarget, profile);
+
     this.retarget.reset();
     this.fi = 0;
     this.playing = true;
@@ -93,6 +102,7 @@ export class Playback {
     this._emit('status', `Loading "${label}"...`, 'loading');
     try {
       const data = await signsSource.getSign(label);
+      this._pendingProfile = { record: data, perSign: getEditsFor(label) };
       const ok = this.playFrames(data.landmarks || []);
       if (ok) {
         const durS = ((this.seq[this.seq.length - 1].t - this.seq[0].t) / 1000).toFixed(1);

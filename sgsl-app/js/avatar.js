@@ -73,15 +73,17 @@ export class SMPLXAvatar {
     this.container.style.position = 'relative';
     this.container.appendChild(this._statusEl);
 
-    new ResizeObserver(() => {
+    this._resizeObs = new ResizeObserver(() => {
       const nw = this.container.clientWidth, nh = this.container.clientHeight;
-      if (!nw || !nh) return;
+      if (!nw || !nh || !this.renderer) return;
       this.renderer.setSize(nw, nh);
       this.camera.aspect = nw / nh;
       this.camera.updateProjectionMatrix();
-    }).observe(this.container);
+    });
+    this._resizeObs.observe(this.container);
 
     const animate = () => {
+      if (this._disposed) return;
       requestAnimationFrame(animate);
       if (this.vrm) this.vrm.update(this.clock.getDelta());
       if (this.controls) this.controls.update();
@@ -89,6 +91,22 @@ export class SMPLXAvatar {
       this.renderer.render(this.scene, this.camera);
     };
     animate();
+  }
+
+  /** Release the WebGL context + render loop. A browser only allows a handful of live
+   *  GL contexts, so any owner that re-creates avatars (Test restarts) must dispose. */
+  dispose() {
+    this._disposed = true;
+    try { this._resizeObs?.disconnect(); } catch { /* already gone */ }
+    try { this.controls?.dispose?.(); } catch { /* optional */ }
+    try {
+      this.renderer?.dispose();
+      this.renderer?.forceContextLoss?.();
+      this.renderer?.domElement?.remove();
+    } catch { /* context already lost */ }
+    this.renderer = null;
+    this.vrm = null;
+    this.loaded = false;
   }
 
   _loadVRM() {

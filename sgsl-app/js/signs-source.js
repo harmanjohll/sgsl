@@ -63,13 +63,14 @@ export async function getManifest() {
   try { local = await store.listSigns(); } catch (_) { local = []; }
 
   const hidden = hiddenSet();
+  const tags = (t) => Array.isArray(t) ? t : [];
   const map = new Map();
   for (const s of lib) {
     if (hidden.has(s.label)) continue;   // tombstoned built-in
-    map.set(s.label, { label: s.label, frames: s.frames, source: 'library' });
+    map.set(s.label, { label: s.label, frames: s.frames, source: 'library', tags: tags(s.tags) });
   }
   for (const s of local) {
-    map.set(s.label, { label: s.label, frames: (s.landmarks || []).length, source: 'local' });
+    map.set(s.label, { label: s.label, frames: (s.landmarks || []).length, source: 'local', tags: tags(s.tags) });
   }
   return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }

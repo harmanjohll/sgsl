@@ -25,6 +25,9 @@ jobs:
       - name: Unit + integration tests
         run: node test/test.mjs
 
+      - name: Recognition invariances
+        run: node test/recognition.test.mjs
+
       - name: Replay-fidelity guard (committed signs)
         run: node test/replay_error.mjs
 

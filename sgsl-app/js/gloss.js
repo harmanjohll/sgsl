@@ -126,9 +126,11 @@ export function parseSentence(text) {
   const isQuestion = text.trim().endsWith('?') ||
     QUESTION_WORDS.has(text.trim().split(/\s+/)[0].toLowerCase().replace(/[?.,!]/g, ''));
 
-  // Detect negation
+  // Detect negation — whole-word match only ("know"/"now"/"nothing personal" must not
+  // trip the "no" entry and head-shake the entire sentence).
   const lowerText = text.toLowerCase();
-  const hasNegation = [...NEGATION_WORDS].some(w => lowerText.includes(w));
+  const lowerWords = lowerText.split(/[^a-z']+/).filter(Boolean);
+  const hasNegation = lowerWords.some(w => NEGATION_WORDS.has(w));
 
   // Tokenize
   let words = text

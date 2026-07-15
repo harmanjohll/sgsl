@@ -8,9 +8,11 @@ new users have something to try; personal or bulk recordings should stay on-devi
 **Current base set:** `one`, `three`, `five` — backs the "Numbers 1–5" lesson.
 
 ## How to curate it
-- **Add** a sign: drop `<label>.json` in this folder and add an entry to
-  `_manifest.json`: `{ "label": "<label>", "frames": <n>, "schema_version": 1, "hands": true }`.
-- **Remove** a sign: delete `<label>.json` and its `_manifest.json` entry.
+- **Add** a sign: drop `<label>.json` in this folder, then run
+  `python3 tools/build_manifest.py` to regenerate `_manifest.json`.
+- **Remove** a sign: delete `<label>.json` and regenerate the manifest.
+- **Tags**: an optional `"tags": ["numbers", ...]` array on the sign JSON flows into the
+  manifest and becomes a filter chip in the Library.
 
 The app reads `_manifest.json` only (never a directory listing), so the file and the
 manifest entry must stay in sync. `test/test.mjs` asserts the base-set size — update
