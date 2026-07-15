@@ -20,6 +20,11 @@ import { signText, resolveLabels } from './sentence-engine.js';
 import { parseSentence } from './gloss.js';
 import { LearnController } from './learn.js';
 
+// Bump on every deploy — the header label is how users see the site updated.
+// Set from JS so a stale cached bundle shows its own (old) number.
+const APP_VERSION = 'v1.1.0 · 15 Jul 2026';
+document.getElementById('app-version').textContent = APP_VERSION;
+
 // ─── Tab switching ──────────────────────────────────────────
 const tabs = document.querySelectorAll('.tab');
 const contents = document.querySelectorAll('.tab-content');
