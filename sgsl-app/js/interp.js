@@ -39,11 +39,24 @@ export function lerpLM(a, b, t) {
 }
 
 // Interpolate a full holistic frame.
+// NOTE: includes the 3D WORLD hands. These were omitted, so every interpolated
+// playback frame (player, preview, sentence bridges — lerpFrame runs on nearly
+// every rendered frame) lost its world hands and fell back to the legacy 2D hand
+// path, quietly diverging from live rendering.
 export function lerpFrame(a, b, t) {
   if (!a) return b;
+  // World hands interpolate only when BOTH endpoints carry them: lerpLM's null-side
+  // passthrough would otherwise SNAP the channel on at a present/absent boundary
+  // (e.g. a sentence bridge from an old no-world-hands clip into a new recording),
+  // hard-switching solver families mid-bridge. Absent on either side -> the span
+  // renders through the 2D path, matching live dropout behaviour.
+  const both = (x, y) => (x && y) ? lerpLM(x, y, t) : undefined;
   return {
+    nmm: (t < 0.5 ? a.nmm : b.nmm) ?? null,   // non-manual marker rides the nearer endpoint
     leftHand:  lerpLM(a.leftHand, b.leftHand, t),
     rightHand: lerpLM(a.rightHand, b.rightHand, t),
+    leftHandWorld:  both(a.leftHandWorld, b.leftHandWorld),
+    rightHandWorld: both(a.rightHandWorld, b.rightHandWorld),
     face:      lerpLM(a.face, b.face, t),
     pose:      lerpLM(a.pose, b.pose, t),
     poseWorld: lerpLM(a.poseWorld, b.poseWorld, t),

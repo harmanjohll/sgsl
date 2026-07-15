@@ -21,6 +21,10 @@ const overlay = document.getElementById('v2-overlay');
 const statusEl = document.getElementById('v2-status');
 const dbgEl = document.getElementById('v2-debug');
 
+// Replay/test mode (?replay=1): no webcam, no tracking worker — landmark frames are injected
+// by the fidelity harness (test/fidelity_run.mjs) via window.__sgslTest. Avatar still boots.
+const REPLAY_MODE = new URLSearchParams(location.search).has('replay');
+
 const setStatus = (msg, kind = 'info') => {
   if (!statusEl) return;
   statusEl.textContent = msg;
@@ -37,14 +41,10 @@ retarget.setAvatar(avatar);
 // Classic worker (NOT { type: 'module' }): MediaPipe Tasks-Vision calls importScripts()
 // internally, which module workers forbid. Classic workers allow it, and Chromium still
 // permits the dynamic import() we use inside the worker.
-const worker = new Worker(new URL('./track-worker.js', import.meta.url));
+const worker = REPLAY_MODE ? null : new Worker(new URL('../../../sgsl-app/js/track-worker.js', import.meta.url));
 let workerReady = false;
 let inFlight = false;   // one frame in the worker at a time (backpressure)
-let tsCtr = 0;
-
-// Surface worker-load failures that would otherwise be SILENT.
-worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console)`, 'error');
-worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
+let workerNote = '';    // last worker status (kept visible above the HUD)
 
 // ── Session recorder (measures FPS-over-time so the soak test is objective) ──
 const rec = {
@@ -54,37 +54,69 @@ const rec = {
   sendTimes: new Map(), samples: [],
 };
 
-worker.onmessage = (e) => {
-  const msg = e.data;
-  if (!msg) return;
-  if (msg.type === 'status') {
-    if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
-    if (dbgEl) dbgEl.textContent = `[worker] ${msg.message}\n` + (dbgEl.textContent || '');
-    return;
+// One-shot body auto-calibration: v1's Record flow pins a STABLE shoulder anchor via its
+// Calibrate button; v2 had none, so the reach anchor was recomputed from the live (jittery,
+// occludable) shoulders every frame. Median of the first ~40 good pose frames -> setCalibration.
+const autoCal = { samples: [], done: false };
+function maybeAutoCalibrate(results) {
+  if (autoCal.done) return;
+  const p = results.poseLandmarks, L = p?.[11], R = p?.[12];
+  if (!L || !R || (L.visibility ?? 1) < 0.5 || (R.visibility ?? 1) < 0.5) return;
+  autoCal.samples.push([(L.x + R.x) / 2, (L.y + R.y) / 2, Math.hypot(L.x - R.x, L.y - R.y)]);
+  if (autoCal.samples.length >= 40) {
+    const med = (i) => autoCal.samples.map(s => s[i]).sort((a, b) => a - b)[Math.floor(autoCal.samples.length / 2)];
+    retarget.setCalibration({ shoulderMid: [med(0), med(1)], shoulderWidth: med(2) });
+    autoCal.done = true;
   }
-  if (msg.type === 'ready') {
-    workerReady = true;
-    setStatus('Tracking ready — raise a hand; the avatar mirrors you.', 'success');
-    return;
+}
+
+// One shared apply path for live tracking AND injected replay frames — the harness
+// exercises exactly what the webcam does.
+function applyResults(results) {
+  maybeAutoCalibrate(results);
+  if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
+  drawOverlay(results);
+  if (dbgEl && retarget._lastDebug) {
+    dbgEl.textContent = (workerNote ? `[worker] ${workerNote}\n` : '') + retarget._lastDebug;
   }
-  if (msg.type === 'error') {
-    setStatus(`Tracking worker failed: ${msg.message}`, 'error');
-    return;
-  }
-  if (msg.type === 'result') {
-    inFlight = false;
-    rec.resultCount++;
-    const sent = rec.sendTimes.get(msg.ts);
-    if (sent != null) { rec.lastLatency = performance.now() - sent; rec.sendTimes.delete(msg.ts); }
-    const results = toResults(msg);
-    rec.handR = !!results.rightHandWorldLandmarks;
-    rec.handL = !!results.leftHandWorldLandmarks;
-    if (avatar.vrm) retarget.applyFromMediaPipe(avatar.vrm, results);
-    drawOverlay(results);
-    if (dbgEl && retarget._lastDebug) dbgEl.textContent = retarget._lastDebug;
-  }
-};
-worker.postMessage({ type: 'init' });
+}
+
+if (worker) {
+  // Surface worker-load failures that would otherwise be SILENT.
+  worker.onerror = (e) => setStatus(`Worker error: ${e.message || 'failed to load track-worker.js'} (open DevTools console)`, 'error');
+  worker.onmessageerror = () => setStatus('Worker message error (serialization).', 'error');
+
+  worker.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg) return;
+    if (msg.type === 'status') {
+      if (!workerReady) setStatus(`Loading tracking model — ${msg.message}`, 'loading');
+      workerNote = msg.message;   // survives HUD refreshes (applyResults rewrites dbgEl)
+      if (dbgEl) dbgEl.textContent = `[worker] ${workerNote}\n` + (dbgEl.textContent || '');
+      return;
+    }
+    if (msg.type === 'ready') {
+      workerReady = true;
+      setStatus('Tracking ready — raise a hand; the avatar mirrors you.', 'success');
+      return;
+    }
+    if (msg.type === 'error') {
+      setStatus(`Tracking worker failed: ${msg.message}`, 'error');
+      return;
+    }
+    if (msg.type === 'result') {
+      inFlight = false;
+      rec.resultCount++;
+      const sent = rec.sendTimes.get(msg.ts);
+      if (sent != null) { rec.lastLatency = performance.now() - sent; rec.sendTimes.delete(msg.ts); }
+      const results = toResults(msg);
+      rec.handR = !!results.rightHandWorldLandmarks;
+      rec.handL = !!results.leftHandWorldLandmarks;
+      applyResults(results);
+    }
+  };
+  worker.postMessage({ type: 'init' });
+}
 
 // ── Camera ───────────────────────────────────────────────────────────────
 async function startCamera() {
@@ -110,7 +142,9 @@ async function pump() {
   if (workerReady && !inFlight && video.readyState >= 2) {
     inFlight = true;
     try {
-      const ts = ++tsCtr * 33;
+      // Real clock: Tasks landmarkers use the timestamp for their internal (OneEuro)
+      // smoothing; a fabricated 30 fps clock at a real ~21 fps skewed velocity ~1.4x.
+      const ts = Math.round(performance.now());
       rec.sendTimes.set(ts, now);
       const bitmap = await createImageBitmap(video);
       worker.postMessage({ type: 'frame', bitmap, ts }, [bitmap]);
@@ -219,20 +253,38 @@ function download(data, name, type) {
 // ── Calibration panel (same setters as v1 -> tuning carries) ───────────────
 const CALIB_KEY = 'sgsl.v2.calib.v1';
 const DEFAULTS = {
-  rollDeg: -170, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
-  curlGain: 0.70, spreadGain: 0.80, smoothing: 0.75,
+  rollDeg: 10, pitchDeg: 10, yawDeg: 25, wristFlip: true, deformGuard: true,
+  curlGain: 1.00, spreadGain: 1.00, smoothing: 0.5,
 };
+// Identical defaults for both sides (the mirrored-Left experiment is reverted — the
+// measured and rig rest bases are chirality-paired per side; see retarget.js WIND_SIGN).
+const defaultsFor = (_s2) => ({ ...DEFAULTS });
 let side = 'Right';
-let calib = { Right: { ...DEFAULTS }, Left: { ...DEFAULTS } };
+let calib = { Right: defaultsFor('Right'), Left: defaultsFor('Left') };
 
 function loadCalib() {
   try {
     const raw = JSON.parse(localStorage.getItem(CALIB_KEY) || 'null');
-    if (raw && raw.Right && raw.Left) { calib = raw; side = raw.side || 'Right'; }
+    if (raw && raw.Right && raw.Left) {
+      // Pre-flip-parity-fix settings (schema v2): rollDeg compensated a ~180° palm
+      // negation that no longer happens — shift by 180° to preserve the tuned look.
+      if ((raw.v || 1) < 2) {
+        for (const s2 of ['Right', 'Left']) {
+          const c = raw[s2];
+          // Untouched old defaults -> new side-correct defaults; else preserve with roll shift.
+          if (Math.abs(c.rollDeg - (-170)) < 1e-6 && Math.abs((c.yawDeg ?? 25) - 25) < 1e-6) raw[s2] = defaultsFor(s2);
+          else c.rollDeg = ((c.rollDeg + 360) % 360) - 180;
+        }
+      }
+      // v3: WIND_SIGN.Left was wrong before this version — left tunings were made
+      // against a 180°-flipped palm. Reset Left to side defaults.
+      if ((raw.v || 1) < 3) raw.Left = defaultsFor('Left');
+      calib = { Right: raw.Right, Left: raw.Left }; side = raw.side || 'Right';
+    }
   } catch (e) { /* defaults */ }
 }
 function saveCalib() {
-  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side })); } catch (e) {}
+  try { localStorage.setItem(CALIB_KEY, JSON.stringify({ ...calib, side, v: 3 })); } catch (e) {}
 }
 function applyCalib() {
   retarget.setHandTuning('Right', calib.Right);
@@ -285,7 +337,7 @@ function wireCalib() {
   }
   const resetBtn = document.getElementById('v2-reset');
   if (resetBtn) resetBtn.addEventListener('click', () => {
-    calib[side] = { ...DEFAULTS };
+    calib[side] = defaultsFor(side);
     bind._refreshers.forEach(f => f());
     applyCalib(); saveCalib();
   });
@@ -296,7 +348,12 @@ function wireCalib() {
   if (shotBtn) shotBtn.addEventListener('click', screenshot);
 }
 
-loadCalib();
+if (!REPLAY_MODE) loadCalib();   // replay: pure defaults — localStorage must not confound scoring
 applyCalib();
 wireCalib();
-startCamera();
+
+// Test hook — used by test/fidelity_run.mjs (and handy from DevTools).
+window.__sgslTest = { retarget, avatar, toResults, applyResults, setStatus, REPLAY_MODE };
+
+if (REPLAY_MODE) setStatus('Replay mode — frames injected by the test harness.', 'info');
+else startCamera();

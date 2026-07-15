@@ -1,0 +1,309 @@
+/* ============================================================
+   SgSL fidelity harness — headless browser bone-vs-landmark scorer
+   ============================================================
+   Drives the REAL v2 page (?replay=1) in headless Chromium, injects
+   synthetic ground-truth landmark frames through the exact production
+   path (adapter.toResults → retarget.applyFromMediaPipe), reads back
+   avatar bone world transforms, and scores fidelity numerically.
+
+   Convention-free metrics (no assumption about the retarget's axis map):
+     ORIENT  per-frame delta-angle rigidity: conjugation preserves rotation
+             angle, so when the input hand rotates X° the avatar hand bone
+             must also rotate ~X°. A winding flip shows as a ~180° avatar
+             step against a 5-10° input step.
+     SHAPE   PIP/DIP bend angles (scalars) avatar vs landmarks.
+     ARM     |posed wrist − IK's own target| in shoulder-widths (does the
+             solver reach its own dot?) + max per-frame wrist jump during
+             occlusion / handedness-flip scenarios (stability).
+
+   Usage: node test/fidelity_run.mjs [--json out.json]
+   CDN is blocked in this container → all jsdelivr URLs are fulfilled
+   from test/vendor/ (exact pinned versions).
+   ============================================================ */
+
+import { createRequire } from 'module';
+import { execSync, spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { writeFileSync, mkdirSync } from 'fs';
+import { buildScenarios, qMul, qConj, qAngle } from './fixtures/synthetic_hands.mjs';
+
+const require = createRequire(import.meta.url);
+let pw;
+try { pw = require('playwright'); }
+catch {
+  const g = execSync('npm root -g').toString().trim();
+  pw = require(join(g, 'playwright'));
+}
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const VENDOR = join(ROOT, 'test', 'vendor');
+const PORT = 8987;
+const K = 8;                       // applies per frame (slerp convergence at smoothing=0)
+const DEG = 180 / Math.PI;
+
+// jsdelivr path fragment -> vendored file
+const VENDOR_MAP = {
+  'three@0.133.0/build/three.min.js': 'three.min.js',
+  'three@0.133.0/examples/js/loaders/GLTFLoader.js': 'GLTFLoader.js',
+  'three@0.133.0/examples/js/controls/OrbitControls.js': 'OrbitControls.js',
+  '@pixiv/three-vrm@0.6.7/lib/three-vrm.js': 'three-vrm.js',
+  'kalidokit@1.1.5/dist/kalidokit.es.js': 'kalidokit.es.js',
+};
+
+// Thresholds (the "loop till fixed" pass bar).
+const PASS = {
+  orientMeanErr: 8,     // deg: mean |avatar step − input step|
+  orientMaxStep: 90,    // deg: no avatar step >90° when input step <15° (flip detector)
+  shapeMeanErr: 15,     // deg: mean PIP/DIP bend error
+  armReach: 0.25,       // shoulder-widths: median |wrist − IK target| (converged frames)
+  armMaxJump: 0.35,     // shoulder-widths: max per-frame wrist jump in occlusion/flip scenarios
+  duoMaxDrop: 0.25,     // SW: how far the DROPPED side's wrist may drift during a contact dropout
+  duoFingerDrift: 15,   // deg: how much the dropped side's fingers may relax during the hold
+  duoReacquire: 0.35,   // SW: max per-frame wrist jump when the hand is re-detected
+};
+
+async function startServer() {
+  const srv = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: ROOT, stdio: 'ignore' });
+  for (let i = 0; i < 50; i++) {
+    try { await fetch(`http://localhost:${PORT}/versions/v2-tasks-worker/index.html`); return srv; }
+    catch { await new Promise(r => setTimeout(r, 200)); }
+  }
+  srv.kill(); throw new Error('http.server did not come up');
+}
+
+// Runs one scenario in the page; returns per-frame measurements.
+const MEASURE = async ({ frames, side, K, filterOff }) => {
+  const T = window.__sgslTest;
+  const THREE = window.THREE;
+  const BN = THREE.VRMSchema.HumanoidBoneName;
+  const vrm = T.avatar.vrm;
+  // Deterministic tuning: retarget defaults but NO smoothing (harness measures math, not lag).
+  for (const s of ['Right', 'Left']) T.retarget.setHandTuning(s, { smoothing: 0 });
+  T.retarget.setInputFilter?.(!filterOff);   // noise-raw A/Bs the One-Euro off
+  const measureSide = (sideName) => {
+    const hand = vrm.humanoid.getBoneNode(BN[sideName + 'Hand']);
+    const q = hand.getWorldQuaternion(new THREE.Quaternion());
+    const wrist = hand.getWorldPosition(new THREE.Vector3());
+    const armDbg = (T.retarget._armDbg || {})[sideName] || null;
+    const bends = {};
+    // VRM names the pinky "Little"; fixtures/gt call it "Pinky".
+    for (const [f, rigName] of [['Index', 'Index'], ['Middle', 'Middle'], ['Ring', 'Ring'], ['Pinky', 'Little']]) {
+      const bones = ['Proximal', 'Intermediate', 'Distal'].map(s2 => vrm.humanoid.getBoneNode(BN[sideName + rigName + s2]));
+      if (bones.some(b => !b)) continue;
+      const p = bones.map(b => b.getWorldPosition(new THREE.Vector3()));
+      const rigF = T.avatar.handRig?.[sideName]?.fingers?.[rigName]?.[2];
+      const dq = bones[2].getWorldQuaternion(new THREE.Quaternion());
+      const dDir = rigF?.fwdLocal ? rigF.fwdLocal.clone().applyQuaternion(dq) : null;
+      const seg1 = p[1].clone().sub(p[0]), seg2 = p[2].clone().sub(p[1]);
+      const ang = (a, b) => a.angleTo(b) * 180 / Math.PI;
+      bends[f] = [null, ang(seg1, seg2), dDir ? ang(seg2, dDir) : null];
+    }
+    const dbg = (T.retarget._handDbg || {})[sideName] || null;
+    const thumbBone = vrm.humanoid.getBoneNode(BN[sideName + 'ThumbDistal']);
+    const thumbDx = thumbBone ? thumbBone.getWorldPosition(new THREE.Vector3()).x - wrist.x : null;
+    const elbowPos = vrm.humanoid.getBoneNode(BN[sideName + 'LowerArm']).getWorldPosition(new THREE.Vector3());
+    return {
+      q: [q.x, q.y, q.z, q.w],
+      wrist: [wrist.x, wrist.y, wrist.z],
+      target: armDbg?.target || null,
+      shoulderW: armDbg?.shoulderW || null,
+      bends,
+      facing: dbg ? dbg.facing : null,
+      thumbDx,
+      elbow: [elbowPos.x, elbowPos.y, elbowPos.z],
+    };
+  };
+  const out = [];
+  for (const fr of frames) {
+    const results = T.toResults(fr.payload);
+    for (let k = 0; k < K; k++) T.applyResults(results);
+    vrm.scene.updateMatrixWorld(true);
+    const main = measureSide(side);
+    const other = measureSide(side === 'Right' ? 'Left' : 'Right');
+    out.push({ ...main, sides: { [side]: main, [side === 'Right' ? 'Left' : 'Right']: other } });
+  }
+  return out;
+};
+
+function scoreOrient(name, frames, meas) {
+  const steps = [];
+  for (let i = 1; i < meas.length; i++) {
+    const gtStep = qAngle(qMul(frames[i].gt.quat, qConj(frames[i - 1].gt.quat))) * DEG;
+    const q0 = meas[i - 1].q, q1 = meas[i].q;
+    const avStep = qAngle(qMul(q1, qConj(q0))) * DEG;
+    steps.push({ gtStep, avStep, err: Math.abs(avStep - gtStep) });
+  }
+  const meanErr = steps.reduce((s, x) => s + x.err, 0) / steps.length;
+  const flips = steps.filter(x => x.gtStep < 15 && x.avStep > PASS.orientMaxStep);
+  const maxStep = Math.max(...steps.map(x => x.avStep));
+  return {
+    name, kind: 'orient',
+    meanErr: +meanErr.toFixed(1), maxStep: +maxStep.toFixed(1), flipCount: flips.length,
+    pass: meanErr < PASS.orientMeanErr && flips.length === 0,
+  };
+}
+
+function scoreShape(name, frames, meas) {
+  // last 5 frames (converged); PIP+DIP only (MCP definition is rig-geometry-dependent).
+  const errs = [];
+  for (const m of meas.slice(-5)) {
+    for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) {
+      const gt = frames[0].gt.bends[f], av = m.bends[f];
+      if (!av) continue;
+      for (const j of [1, 2]) if (av[j] != null) errs.push(Math.abs(av[j] - gt[j]));
+    }
+  }
+  const meanErr = errs.reduce((s, x) => s + x, 0) / (errs.length || 1);
+  return { name, kind: 'shape', meanErr: +meanErr.toFixed(1), pass: meanErr < PASS.shapeMeanErr };
+}
+
+function scoreArm(name, frames, meas) {
+  const sw = meas.find(m => m.shoulderW)?.shoulderW || 0.25;
+  const dists = meas.filter(m => m.target).map(m =>
+    Math.hypot(m.wrist[0] - m.target[0], m.wrist[1] - m.target[1], m.wrist[2] - m.target[2]) / sw);
+  const sorted = [...dists].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? Infinity;
+  let maxJump = 0;
+  for (let i = 1; i < meas.length; i++) {
+    const j = Math.hypot(...[0, 1, 2].map(k => meas[i].wrist[k] - meas[i - 1].wrist[k])) / sw;
+    if (j > maxJump) maxJump = j;
+  }
+  const stab = name !== 'cross-clean';
+  return {
+    name, kind: 'arm',
+    medianReach: +median.toFixed(3), maxJump: +maxJump.toFixed(3),
+    pass: (stab ? maxJump < PASS.armMaxJump : true) && median < PASS.armReach,
+  };
+}
+
+function scoreFacing(name, meas, side, expectFacing, expectThumbDx) {
+  // Last 5 frames (converged). facing = driven _handDbg palmNormal.z (rig-paired
+  // convention); thumbDx = rendered thumb-vs-wrist world x (anatomical, convention-free).
+  const last = meas.slice(-5).map(m => m.sides[side]);
+  const vals = last.map(m => m.facing).filter(v => v != null);
+  const mean = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+  const tVals = last.map(m => m.thumbDx).filter(v => v != null);
+  const tMean = tVals.reduce((a, b) => a + b, 0) / (tVals.length || 1);
+  return {
+    name, kind: 'facing', meanFacing: +mean.toFixed(2), thumbDx: +tMean.toFixed(3),
+    pass: vals.length > 0 && Math.sign(mean) === expectFacing && Math.abs(mean) > 0.3
+      && tVals.length > 0 && Math.sign(tMean) === expectThumbDx && Math.abs(tMean) > 0.015,
+  };
+}
+
+// Monotonic-follow: values must rise with the swept input (Spearman-ish sign check)
+// and cover a meaningful span — proves the avatar tracks the measured signal.
+function monotonicSpan(vals) {
+  let up = 0, down = 0;
+  for (let i = 1; i < vals.length; i++) {
+    if (vals[i] > vals[i - 1] + 1e-6) up++;
+    else if (vals[i] < vals[i - 1] - 1e-6) down++;
+  }
+  return { span: vals[vals.length - 1] - vals[0], upRatio: up / Math.max(1, up + down) };
+}
+
+function scoreDepth(name, meas, side) {
+  // za wrist z sweeps toward the camera -> avatar wrist world z must rise.
+  const z = meas.map(m => m.sides[side].wrist[2]);
+  const { span, upRatio } = monotonicSpan(z);
+  return { name, kind: 'depth', spanZ: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.10 && upRatio > 0.85 };
+}
+
+function scoreElbow(name, meas, side) {
+  // pose elbow lifts -> avatar elbow world y must rise (wrist target unchanged).
+  const y = meas.map(m => m.sides[side].elbow[1]);
+  const { span, upRatio } = monotonicSpan(y);
+  return { name, kind: 'elbow', spanY: +span.toFixed(3), upRatio: +upRatio.toFixed(2), pass: span > 0.03 && upRatio > 0.85 };
+}
+
+function scoreNoise(name, meas, rawRef) {
+  // Static hand + seeded sensor noise: mean frame-to-frame wrist step (drop the
+  // first 10 convergence frames). Filtered run must cut the raw run's jitter.
+  const steps = [];
+  for (let i = 11; i < meas.length; i++) {
+    const a = meas[i - 1].sides.Right.wrist, b = meas[i].sides.Right.wrist;
+    steps.push(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+  }
+  const mean = steps.reduce((s2, x) => s2 + x, 0) / steps.length;
+  const meanMm = +(mean * 1000).toFixed(2);
+  if (name === 'noise-raw') return { name, kind: 'noise', jitterMm: meanMm, pass: true };   // reference run
+  const ok = rawRef != null && meanMm < rawRef * 0.6;
+  return { name, kind: 'noise', jitterMm: meanMm, vsRaw: rawRef != null ? +(meanMm / rawRef).toFixed(2) : null, pass: ok };
+}
+
+function scoreDuo(name, frames, meas, window_) {
+  const [a, b] = window_;
+  const dist3 = (p, q2) => Math.hypot(p[0] - q2[0], p[1] - q2[1], p[2] - q2[2]);
+  const sw = meas.find(m => m.sides.Right.shoulderW)?.sides.Right.shoulderW || 0.25;
+  const L = (i) => meas[i].sides.Left, R = (i) => meas[i].sides.Right;
+  // Dropped/held side (Left): must HOLD position + finger pose through the window.
+  const ref = L(a - 1).wrist;
+  let maxDrop = 0;
+  for (let i = a; i <= Math.min(b + 2, meas.length - 1); i++) maxDrop = Math.max(maxDrop, dist3(L(i).wrist, ref) / sw);
+  const bendAt = (i) => L(i).bends.Index?.[1] ?? 0;
+  const fingerDrift = Math.abs(bendAt(b) - bendAt(a - 1));
+  let reacquire = 0;
+  for (let i = b + 1; i <= Math.min(b + 6, meas.length - 1); i++) reacquire = Math.max(reacquire, dist3(L(i).wrist, L(i - 1).wrist) / sw);
+  // The still-tracked side (Right) must keep following its target throughout.
+  const rDists = meas.filter(m => m.sides.Right.target).map(m => dist3(m.sides.Right.wrist, m.sides.Right.target) / sw).sort((x, y) => x - y);
+  const rightTrack = rDists[Math.floor(rDists.length / 2)] ?? Infinity;
+  return {
+    name, kind: 'duo',
+    maxDrop: +maxDrop.toFixed(3), fingerDrift: +fingerDrift.toFixed(1),
+    reacquire: +reacquire.toFixed(3), rightTrack: +rightTrack.toFixed(3),
+    pass: maxDrop < PASS.duoMaxDrop && fingerDrift < PASS.duoFingerDrift
+      && reacquire < PASS.duoReacquire && rightTrack < PASS.armReach,
+  };
+}
+
+async function main() {
+  const jsonOut = process.argv.includes('--json')
+    ? process.argv[process.argv.indexOf('--json') + 1] : null;
+  const scenarios = buildScenarios();
+  const srv = await startServer();
+  const browser = await pw.chromium.launch();
+  const results = [];
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    page.on('pageerror', (e) => console.error('  [pageerror]', e.message));
+    page.on('console', (m) => { if (m.type() === 'error') console.error('  [console]', m.text().slice(0, 200)); });
+    await page.route('**/*', (route) => {
+      const url = route.request().url();
+      if (url.startsWith(`http://localhost:${PORT}/`)) return route.continue();
+      const hit = Object.keys(VENDOR_MAP).find(k => url.includes(k));
+      if (hit) return route.fulfill({ path: join(VENDOR, VENDOR_MAP[hit]), contentType: 'text/javascript' });
+      return route.abort();
+    });
+
+    for (const sc of scenarios) {
+      // Fresh page per scenario: resets retarget streaks/facing state + bone pose.
+      await page.goto(`http://localhost:${PORT}/versions/v2-tasks-worker/?replay=1`, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__sgslTest && window.__sgslTest.avatar?.loaded === true, null, { timeout: 90000 });
+      // duo/noise scenarios test per-frame dynamics (streak decay, holds, jitter) -> K=1.
+      const K1 = sc.kind === 'duo' || sc.kind === 'noise' ? 1 : K;
+      const meas = await page.evaluate(MEASURE, { frames: sc.frames, side: sc.side, K: K1, filterOff: !!sc.filterOff });
+      const score = sc.kind === 'orient' ? scoreOrient(sc.name, sc.frames, meas)
+        : sc.kind === 'shape' ? scoreShape(sc.name, sc.frames, meas)
+        : sc.kind === 'duo' ? scoreDuo(sc.name, sc.frames, meas, sc.window)
+        : sc.kind === 'facing' ? scoreFacing(sc.name, meas, sc.side, sc.expectFacing, sc.expectThumbDx)
+        : sc.kind === 'depth' ? scoreDepth(sc.name, meas, sc.side)
+        : sc.kind === 'elbow' ? scoreElbow(sc.name, meas, sc.side)
+        : sc.kind === 'noise' ? scoreNoise(sc.name, meas, results.find(r => r.name === 'noise-raw')?.jitterMm)
+        : scoreArm(sc.name, sc.frames, meas);
+      score.facingChanges = meas.reduce((n, m, i) => n + (i > 0 && m.facing !== meas[i - 1].facing ? 1 : 0), 0);
+      results.push(score);
+      console.log(`${score.pass ? 'PASS' : 'FAIL'}  ${sc.name.padEnd(16)} ${JSON.stringify({ ...score, name: undefined, kind: undefined, pass: undefined })}`);
+    }
+  } finally {
+    await browser.close();
+    srv.kill();
+  }
+  const failed = results.filter(r => !r.pass);
+  console.log(`\n${results.length - failed.length}/${results.length} scenarios pass.`);
+  if (jsonOut) { mkdirSync(dirname(jsonOut), { recursive: true }); writeFileSync(jsonOut, JSON.stringify({ results }, null, 1)); }
+  process.exit(failed.length ? 1 : 0);
+}
+
+main().catch((e) => { console.error(e); process.exit(2); });

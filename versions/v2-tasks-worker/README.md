@@ -1,8 +1,16 @@
 # v2 — tasks-worker (off-thread tracking)
 
-**Status: built, UNTESTED by author — run it live and report.** This is an experiment, not a
-replacement for v1. The only thing that changes vs v1 is the **tracking source**; the avatar and
-the tuned retarget/calibration are reused unchanged.
+**Status: performance PROVEN live (60 fps locked, zero long-session degradation); retarget math
+overhauled and verified by the autonomous fidelity harness (`test/fidelity_run.mjs`, 12/12
+scenarios) — awaiting the user's live visual pass.** The only thing that changes vs v1 is the
+**tracking source**; the avatar and the shared retarget are reused unchanged (v1 gets every math
+fix for free).
+
+Recent overhaul (see git log): winding flip-parity fix (killed the ~180° hand barrel-rolls),
+position-first forearm split (wrist now lands on the tracked dot), temporal handedness routing
+(hands crossing no longer swap arms), anchor EMA + auto-calibration, adaptive across-body depth,
+rate-compensated smoothing, chirally-mirrored left-hand defaults. Defaults changed accordingly
+(roll +10°, gains 1.0, smoothing 50%); saved settings migrate automatically.
 
 ## Why this exists
 v1 ("movement becomes random after a while") runs two heavy ML models (Holistic + HandLandmarker)

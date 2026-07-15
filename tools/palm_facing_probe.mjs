@@ -22,7 +22,10 @@
 // ============================================================================
 
 // ── retarget.js constants (kept in sync by hand) ──
-const HAND_W = [-1, -1, -1];
+const HAND_W = [-1, -1, -1];  // pin frame (wristFlip OFF). Production defaults wristFlip ON
+// (wx=+1), which negates `wind` but not palmNormal.z; retarget.js re-parifies the winding
+// under flip, so the facing DECISION is flip-invariant and this un-flipped model remains
+// the canonical frame for pinning WIND_SIGN.
 const HAND_DET = HAND_W[0] * HAND_W[1] * HAND_W[2];   // -1
 const WIND_SIGN = { Left: -1, Right: -1 };
 const WIND_THRESH = 0.3;

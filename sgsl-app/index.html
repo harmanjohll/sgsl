@@ -11,8 +11,7 @@
 
   <!-- Pinned library versions — exact builds the Kalidokit retarget is tuned to.
        MediaPipe Holistic 0.5.x is a deprecated legacy solution; it is pinned to an
-       exact CDN build on purpose so it can't change under us. (Modernising to the
-       Tasks-Vision HolisticLandmarker is a separate, later hardening task.) -->
+       exact CDN build on purpose so it can't change under us. -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
@@ -30,41 +29,125 @@
   <header class="header">
     <h1>SgSL · Fumi</h1>
     <nav class="tabs">
-      <button class="tab active" data-tab="signit">Sign It</button>
-      <button class="tab" data-tab="record">Record</button>
-      <button class="tab" data-tab="library">Library</button>
+      <button class="tab active" data-tab="learn">Learn</button>
+      <button class="tab" data-tab="test">Test</button>
+      <button class="tab" data-tab="contribute">Contribute</button>
     </nav>
   </header>
 
-  <!-- ─── Sign It: text -> sign ─────────────────────────────── -->
-  <main id="tab-signit" class="main tab-content active">
+  <!-- ─── Learn: text → sign (lessons + explore) ───────────────── -->
+  <main id="tab-learn" class="main tab-content active">
     <section class="record-panel">
-      <h2 class="sidebar-title">Type — Fumi signs it</h2>
-      <div class="rec-label-row">
-        <input type="text" id="signit-input" class="rec-input" placeholder="e.g. thank you, hello, one">
-        <button id="btn-signit-play" class="btn btn-record">Sign</button>
+      <div class="learn-head">
+        <h2 class="sidebar-title">Learn</h2>
+        <span id="learn-xp" class="learn-xp"></span>
       </div>
-      <div id="signit-chips" class="chips"></div>
-      <p class="hint">Green = in the library and signable. Grey = not recorded yet (skipped). Vocabulary grows as you record signs.</p>
-      <div id="signit-status" class="status status-info">Type a word or phrase and press Sign.</div>
+
+      <!-- Guided lessons -->
+      <div id="learn-lessons" class="lesson-list"><p class="hint">Loading lessons…</p></div>
+
+      <!-- Active lesson controls (shown while a lesson runs) -->
+      <div id="learn-lesson" class="lesson-active hidden">
+        <div id="learn-prompt" class="lesson-prompt"></div>
+        <div class="rec-btn-row">
+          <button id="btn-learn-practice" class="btn">↻ Practice again</button>
+          <button id="btn-learn-gotit" class="btn btn-save">✓ Got it</button>
+          <button id="btn-learn-exit" class="btn">Exit lesson</button>
+        </div>
+      </div>
+
+      <!-- Free explore: type → sign -->
+      <div class="calib-group-title">Or type anything</div>
+      <div class="rec-label-row">
+        <input type="text" id="learn-input" class="rec-input" placeholder="e.g. thank you, one, what time">
+        <button id="btn-learn-sign" class="btn btn-record">Sign</button>
+      </div>
+      <div id="learn-chips" class="chips"></div>
+
+      <!-- Library browser -->
+      <div class="calib-group-title">Library</div>
+      <div id="learn-list" class="sign-list"><p class="hint">Loading signs…</p></div>
+
+      <div id="learn-status" class="status status-info">Pick a lesson, or type a word for Fumi to sign.</div>
     </section>
     <section class="viewer">
-      <div id="signit-viewport" class="viewport"></div>
+      <div id="learn-viewport" class="viewport"></div>
       <div class="controls">
+        <div class="progress-bar"><div id="learn-progress-fill" class="progress-fill"></div></div>
         <div class="control-row">
-          <button id="btn-signit-replay" class="btn">Replay</button>
-          <button id="btn-signit-stop" class="btn">Stop</button>
+          <button id="btn-learn-replay" class="btn">Replay</button>
+          <button id="btn-learn-stop" class="btn">Stop</button>
+          <span id="learn-frame-info" class="frame-info">0 / 0</span>
           <label class="speed-control">Speed:
-            <input type="range" id="signit-speed" min="0.2" max="3" step="0.1" value="1">
-            <span id="signit-speed-label">1.0x</span>
+            <input type="range" id="learn-speed" min="0.2" max="3" step="0.1" value="1">
+            <span id="learn-speed-label">1.0x</span>
           </label>
+        </div>
+        <!-- Per-sign edits (non-destructive overlay; raw recording untouched) -->
+        <div id="lib-edit" class="control-row hidden">
+          <span class="hint" id="lib-edit-label">Edit:</span>
+          <label class="speed-control">Trim start:
+            <input type="range" id="lib-trim-start" min="0" max="2000" step="50" value="0">
+            <span id="lib-trim-start-label">0.00s</span>
+          </label>
+          <label class="speed-control">Trim end:
+            <input type="range" id="lib-trim-end" min="0" max="2000" step="50" value="0">
+            <span id="lib-trim-end-label">0.00s</span>
+          </label>
+          <label class="speed-control">Sign speed:
+            <input type="range" id="lib-sign-speed" min="0.5" max="2" step="0.05" value="1">
+            <span id="lib-sign-speed-label">1.00x</span>
+          </label>
+          <button id="lib-edit-reset" class="btn">Reset edits</button>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- ─── Record: webcam -> sign ────────────────────────────── -->
-  <main id="tab-record" class="main tab-content">
+  <!-- ─── Test: sign → text (camera-on scoring) ────────────────── -->
+  <main id="tab-test" class="main tab-content">
+    <section class="record-panel">
+      <h2 class="sidebar-title">Test yourself</h2>
+      <div class="camera-container">
+        <video id="test-video" class="rec-video" playsinline muted></video>
+        <canvas id="test-overlay" class="rec-overlay"></canvas>
+        <div id="test-camera-status" class="camera-status">Press "Start camera".</div>
+      </div>
+      <ol class="test-steps">
+        <li><strong>Start the camera</strong> and stand back so your head and both hands are in
+          frame — your hand skeleton lights up (<span class="leg-r">green = right</span>,
+          <span class="leg-l">orange = left</span>) when you're tracked.</li>
+        <li><strong>Pick a sign</strong> from the list below.</li>
+        <li>Press <strong>Sign the word</strong>, perform it once, then hold still — it auto-stops
+          (or press <strong>I'm done</strong>).</li>
+        <li>Read your <strong>grade</strong> and the tip on what to fix, then try again.</li>
+      </ol>
+      <p class="hint">Only signs recorded in the new format can be tested.</p>
+      <div class="rec-btn-row">
+        <button id="btn-test-start" class="btn btn-record">Start camera</button>
+        <button id="btn-test-attempt" class="btn" disabled>● Sign the word</button>
+        <button id="btn-test-done" class="btn" disabled>I'm done</button>
+      </div>
+      <label class="speed-control">Scoring strictness:
+        <input type="range" id="test-strictness" min="0" max="2" step="1" value="1">
+        <span id="test-strictness-label">Normal</span>
+      </label>
+      <p class="hint">Scoring already ignores where you stand, your size in frame, and how fast you
+        sign — strictness only tunes how closely your handshape and movement must match. (A learned
+        per-signer model comes later, once there are many examples per sign.)</p>
+      <div class="calib-group-title">Pick a sign to practice</div>
+      <div id="test-signlist" class="sign-list"><p class="hint">Start the camera to load testable signs…</p></div>
+      <div id="test-result" class="quality-overall"></div>
+      <div id="test-status" class="status status-info">Start the camera when you're ready.</div>
+    </section>
+    <section class="viewer">
+      <div id="test-viewport" class="viewport"></div>
+      <div id="test-score" class="status status-info">Your mirror — the avatar shows what the camera sees.</div>
+    </section>
+  </main>
+
+  <!-- ─── Contribute: webcam -> record a sign for the library ──── -->
+  <main id="tab-contribute" class="main tab-content">
     <section class="record-panel">
       <h2 class="sidebar-title">Camera</h2>
       <div class="camera-container">
@@ -82,20 +165,21 @@
           <button id="btn-calibrate" class="btn" disabled>Calibrate (arms at sides)</button>
           <button id="btn-rec-start" class="btn btn-record" disabled>Record</button>
           <button id="btn-rec-stop" class="btn" disabled>Stop</button>
+          <button id="btn-autocut" class="btn">Auto-cut: On</button>
         </div>
         <div id="rec-timer" class="rec-timer"></div>
         <label class="speed-control">Margin of error (tolerance):
           <input type="range" id="tolerance-slider" min="2" max="20" step="1" value="8">
           <span id="tolerance-label">8%</span>
         </label>
-        <!-- Manual calibration + stability: dial the hand orientation in by eye and steady
-             the avatar while the automatic math is being refined. Persisted in localStorage. -->
+        <details id="advanced-panel" class="advanced">
+          <summary>Advanced · calibration &amp; diagnostics</summary>
         <div class="calib-panel">
           <button id="calib-handsel" class="btn">Calibrating: Right hand ⇄</button>
           <div class="calib-group-title">Orientation</div>
           <label class="speed-control">Palm rotation:
-            <input type="range" id="calib-roll" min="-180" max="180" step="5" value="-170">
-            <span id="calib-roll-label">-170°</span>
+            <input type="range" id="calib-roll" min="-180" max="180" step="5" value="10">
+            <span id="calib-roll-label">10°</span>
           </label>
           <label class="speed-control">Pitch (tilt):
             <input type="range" id="calib-pitch" min="-90" max="90" step="5" value="10">
@@ -108,24 +192,24 @@
           <button id="calib-wristflip" class="btn">Wrist rotation: Flipped</button>
           <div class="calib-group-title">Fingers</div>
           <label class="speed-control">Curl:
-            <input type="range" id="calib-curl" min="0.5" max="2" step="0.05" value="0.7">
-            <span id="calib-curl-label">0.70×</span>
+            <input type="range" id="calib-curl" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-curl-label">1.00×</span>
           </label>
           <label class="speed-control">Spread:
-            <input type="range" id="calib-spread" min="0.5" max="2" step="0.05" value="0.8">
-            <span id="calib-spread-label">0.80×</span>
+            <input type="range" id="calib-spread" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-spread-label">1.00×</span>
           </label>
           <label class="speed-control">Thumb swing:
             <input type="range" id="calib-thumb" min="-60" max="60" step="5" value="25">
             <span id="calib-thumb-label">25°</span>
           </label>
           <label class="speed-control">Thumb curl:
-            <input type="range" id="calib-thumbcurl" min="0.5" max="2" step="0.05" value="0.7">
-            <span id="calib-thumbcurl-label">0.70×</span>
+            <input type="range" id="calib-thumbcurl" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-thumbcurl-label">1.00×</span>
           </label>
           <label class="speed-control">Thumb spread:
-            <input type="range" id="calib-thumbspread" min="0.5" max="2" step="0.05" value="0.8">
-            <span id="calib-thumbspread-label">0.80×</span>
+            <input type="range" id="calib-thumbspread" min="0.5" max="2" step="0.05" value="1">
+            <span id="calib-thumbspread-label">1.00×</span>
           </label>
           <div class="calib-group-title">Reach</div>
           <label class="speed-control">Depth (forward):
@@ -138,8 +222,8 @@
           </label>
           <div class="calib-group-title">Stability</div>
           <label class="speed-control">Smoothing:
-            <input type="range" id="calib-smooth" min="0" max="1" step="0.05" value="0.75">
-            <span id="calib-smooth-label">75%</span>
+            <input type="range" id="calib-smooth" min="0" max="1" step="0.05" value="0.5">
+            <span id="calib-smooth-label">50%</span>
           </label>
           <button id="calib-deformguard" class="btn">Deformation guard: On</button>
           <label class="speed-control">Guard strength:
@@ -147,10 +231,12 @@
             <span id="calib-guardstr-label">100%</span>
           </label>
           <div class="rec-btn-row">
+            <button id="btn-autotune" class="btn">✨ Auto-tune hands</button>
             <button id="btn-calib-reset" class="btn">Reset calibration</button>
             <button id="btn-screenshot" class="btn">📷 Screenshot</button>
           </div>
         </div>
+        </details>
       </div>
       <div id="quality-panel" class="quality-panel hidden">
         <h3 class="quality-title">Quality Check</h3>
@@ -174,32 +260,10 @@
     <section class="viewer">
       <div id="rec-avatar-viewport" class="viewport"></div>
       <div id="rec-avatar-status" class="status status-info">Avatar will mirror your signing in real-time.</div>
-      <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
-    </section>
-  </main>
-
-  <!-- ─── Library: browse + play ────────────────────────────── -->
-  <main id="tab-library" class="main tab-content">
-    <aside class="sidebar">
-      <h2 class="sidebar-title">Sign Library</h2>
-      <div id="lib-sign-list" class="sign-list"><p class="hint">Open this tab to load signs…</p></div>
-    </aside>
-    <section class="viewer">
-      <div id="lib-viewport" class="viewport"></div>
-      <div class="controls">
-        <div class="progress-bar"><div id="lib-progress-fill" class="progress-fill"></div></div>
-        <div class="control-row">
-          <button id="btn-lib-replay" class="btn">Replay</button>
-          <button id="btn-lib-pause" class="btn">Pause</button>
-          <button id="btn-lib-stop" class="btn">Stop</button>
-          <span id="lib-frame-info" class="frame-info">0 / 0</span>
-          <label class="speed-control">Speed:
-            <input type="range" id="lib-speed" min="0.2" max="3" step="0.1" value="1">
-            <span id="lib-speed-label">1.0x</span>
-          </label>
-        </div>
-      </div>
-      <div id="lib-status" class="status status-info">Initializing…</div>
+      <details id="advanced-console" class="advanced">
+        <summary>Live metrics console</summary>
+        <pre id="rec-debug" style="font:11px/1.3 monospace;color:#88aacc;background:#111;padding:8px;border-radius:6px;max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+      </details>
     </section>
   </main>
 

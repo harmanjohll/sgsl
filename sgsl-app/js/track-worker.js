@@ -31,8 +31,8 @@ const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmar
 let vision = null, fileset = null;
 let pose = null, hand = null, face = null;
 let ready = false;
-let handFrameCtr = 0;          // throttle the hand model to every other frame (matches v1)
-let lastHands = [];            // reuse last hand detection on the skipped frame
+let lastHands = [];            // last hand detection (kept up to 2 missed frames — grace)
+let handMiss = 0;              // consecutive empty hand detections
 let lastTs = 0;                // Tasks landmarkers require strictly-increasing timestamps
 
 const status = (m) => self.postMessage({ type: 'status', message: m });
@@ -110,22 +110,26 @@ function detect(bitmap, ts) {
   try { poseRes = pose.detectForVideo(bitmap, ts); } catch (e) { /* transient */ }
   if (face) { try { faceRes = face.detectForVideo(bitmap, ts); } catch (e) { /* transient */ } }
 
-  // Hands every OTHER frame; reuse last between (halves the two-model cost — same as v1).
-  if ((handFrameCtr++ & 1) === 0) {
-    try {
-      const hr = hand.detectForVideo(bitmap, ts);
-      lastHands = [];
-      if (hr && hr.landmarks) {
-        for (let i = 0; i < hr.landmarks.length; i++) {
-          lastHands.push({
-            categoryName: hr.handedness?.[i]?.[0]?.categoryName || (i === 0 ? 'Right' : 'Left'),
-            landmarks: hr.landmarks[i] || null,
-            worldLandmarks: hr.worldLandmarks?.[i] || null,
-          });
-        }
+  // Hands EVERY frame. The every-other-frame throttle was a v1 MAIN-THREAD tactic;
+  // in a worker it only halved the hand sample rate (~10-12 Hz effective) and doubled
+  // the wall-clock of any handedness flicker. lastHands survives up to 2 missed
+  // detections (grace) so a single dropped frame doesn't null both hands — the v1
+  // pipeline had Holistic hands as a second source; v2 has only this one.
+  try {
+    const hr = hand.detectForVideo(bitmap, ts);
+    const hands = [];
+    if (hr && hr.landmarks) {
+      for (let i = 0; i < hr.landmarks.length; i++) {
+        hands.push({
+          categoryName: hr.handedness?.[i]?.[0]?.categoryName || (i === 0 ? 'Right' : 'Left'),
+          landmarks: hr.landmarks[i] || null,
+          worldLandmarks: hr.worldLandmarks?.[i] || null,
+        });
       }
-    } catch (e) { /* keep lastHands */ }
-  }
+    }
+    if (hands.length) { lastHands = hands; handMiss = 0; }
+    else if (++handMiss > 2) lastHands = [];
+  } catch (e) { /* transient — keep lastHands */ }
 
   self.postMessage({
     type: 'result', ts,
