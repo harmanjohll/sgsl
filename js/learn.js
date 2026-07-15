@@ -78,16 +78,20 @@ export class LearnController {
     return this.next();
   }
 
-  /** Advance to the next AVAILABLE sign; returns the step (or null at lesson end). */
+  /** Advance to the next AVAILABLE sign; returns the step (or null at lesson end).
+   *  Deliberately does NOT auto-play — the learner presses ▶ Play sign when ready.
+   *  index/total count AVAILABLE signs only, so a trimmed vocabulary reads "1 of 3",
+   *  not a gappy "1/5 → 3/5". */
   next() {
     if (!this.current) return null;
     const s = this.current;
     do { s.idx++; } while (s.idx < s.signs.length && !s.signs[s.idx].available);
     if (s.idx >= s.signs.length) return this._finish();
     const step = s.signs[s.idx];
-    this.pb.playLabel(step.label);
-    this._status(`Watch: "${step.label}"  ·  sign ${s.idx + 1} of ${s.signs.length}`);
-    return { label: step.label, index: s.idx, total: s.signs.length, done: false };
+    const avail = s.signs.filter(x => x.available);
+    const availIdx = avail.indexOf(step);
+    this._status(`Next: "${step.label}"  ·  press ▶ Play sign to watch it`);
+    return { label: step.label, index: availIdx, total: avail.length, done: false };
   }
 
   replay() { if (this.current && this.current.idx >= 0) this.pb.playLabel(this.current.signs[this.current.idx].label); }

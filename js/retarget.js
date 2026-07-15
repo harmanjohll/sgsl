@@ -196,7 +196,18 @@ export class SMPLXRetarget {
       curlGain: 1.00, spreadGain: 1.00, thumbDeg: 25 * m, thumbCurl: 1.00, thumbSpread: 1.00,
       reachDepth: 0.90, reachGain: 1.00, wristFlip: true, deformGuard: true,
       guardStrictness: 1, smoothing: 0, handLerp: HAND_LERP, armLerp: ARM_IK_LERP,
+      // Vertical hand/arm placement bias, in avatar shoulder-widths (+ = raise). The
+      // only reach knob with no natural home in reachGain/reachDepth — see _solveArmIK.
+      heightOffset: 0,
     };
+  }
+
+  /** Re-seed BOTH sides from the shipped defaults and clear the body baseline —
+   *  the clean slate calib-profile.js builds its precedence chain on. */
+  resetTuning() {
+    this._sideCal = { Right: this._defaultCalib('Right'), Left: this._defaultCalib('Left') };
+    this._calib = null;
+    this._activate('Right');
   }
 
   /** Load a side's calibration into the active this._* scratch fields read by _driveHand /
@@ -209,6 +220,7 @@ export class SMPLXRetarget {
     this._reachDepth = c.reachDepth; this._reachGain = c.reachGain;
     this._wristFlip = c.wristFlip; this._deformGuard = c.deformGuard; this._guardStrictness = c.guardStrictness;
     this._smoothing = c.smoothing; this._handLerp = c.handLerp; this._armLerp = c.armLerp;
+    this._heightOffset = c.heightOffset || 0;
     // (per-frame lerp fractions; call sites stretch them by _rateK via _dtLerp)
   }
 
@@ -220,7 +232,7 @@ export class SMPLXRetarget {
     const cal = this._sideCal[side]; if (!cal || !c) return;
     const num = (v) => typeof v === 'number' && isFinite(v);
     for (const k of ['rollDeg', 'pitchDeg', 'yawDeg']) if (num(c[k])) cal.orientCalib[k] = c[k];
-    for (const k of ['curlGain', 'spreadGain', 'thumbDeg', 'thumbCurl', 'thumbSpread', 'reachDepth', 'reachGain', 'guardStrictness']) if (num(c[k])) cal[k] = c[k];
+    for (const k of ['curlGain', 'spreadGain', 'thumbDeg', 'thumbCurl', 'thumbSpread', 'reachDepth', 'reachGain', 'guardStrictness', 'heightOffset']) if (num(c[k])) cal[k] = c[k];
     if (typeof c.wristFlip === 'boolean') cal.wristFlip = c.wristFlip;
     if (typeof c.deformGuard === 'boolean') cal.deformGuard = c.deformGuard;
     if (num(c.smoothing)) { cal.smoothing = clampNum(c.smoothing, 0, 1); const k = 1 - 0.8 * cal.smoothing; cal.handLerp = HAND_LERP * k; cal.armLerp = ARM_IK_LERP * k; }
@@ -748,14 +760,14 @@ export class SMPLXRetarget {
       }
       T = new THREE.Vector3(
         mid.x + xOffSW * avShoulderW,
-        mid.y - relY * avShoulderW * this._reachGain,
+        mid.y - relY * avShoulderW * this._reachGain + this._heightOffset * avShoulderW,
         mid.z + avShoulderW * depthSW * FRONT_Z,
       );
     } else {
       // Absolute fallback (no shoulders/nose): image-centered box.
       T = new THREE.Vector3(
         mid.x + (0.5 - screen.x) * avShoulderW * BOX_W * -MIRROR_X,
-        mid.y + (0.5 - screen.y) * avShoulderW * BOX_H,
+        mid.y + (0.5 - screen.y) * avShoulderW * BOX_H + this._heightOffset * avShoulderW,
         mid.z + avShoulderW * this._reachDepth * FRONT_Z,
       );
     }
@@ -788,7 +800,7 @@ export class SMPLXRetarget {
       const eySW = ((e2.y - anchor.y) / anchor.scale) * this._reachGain;
       const E2 = new THREE.Vector3(
         mid.x + exSW * avShoulderW,
-        mid.y - eySW * avShoulderW,
+        mid.y - eySW * avShoulderW + this._heightOffset * avShoulderW * 0.5,
         mid.z + avShoulderW * 0.5 * depthSW * FRONT_Z,
       );
       const cand = E2.sub(S.clone().add(T).multiplyScalar(0.5));

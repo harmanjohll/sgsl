@@ -56,17 +56,21 @@ function bodyFrame(frame, calib) {
   return null;
 }
 
-/** One hand → {loc:[x,y] body-frame, shape:[21×[x,y]] wrist-anchored+scaled}|null. */
+/** One hand → {loc:[x,y] body-frame|null, shape:[21×[x,y]] wrist-anchored+scaled}|null.
+ *  With no body frame (v1 hand-only recordings) the hand still normalizes: `loc` is
+ *  null and scoring falls back to the hand-intrinsic SHAPE channel only — handshape
+ *  is wrist-anchored and span-scaled, so it needs no body reference. */
 function normHand(hand2d, poseWrist, bf) {
   const poseOk = poseWrist && (poseWrist[3] ?? 1) >= 0.5;   // visibility gate (no phantom hands)
   const wrist = hand2d?.[0] || (poseOk ? [poseWrist[0], poseWrist[1]] : null);
-  if (!wrist || !bf) return null;
-  const loc = [(wrist[0] - bf.mid[0]) / bf.sw, (wrist[1] - bf.mid[1]) / bf.sw];
+  if (!wrist) return null;
+  const loc = bf ? [(wrist[0] - bf.mid[0]) / bf.sw, (wrist[1] - bf.mid[1]) / bf.sw] : null;
   let shape = null;
   if (hand2d && hand2d.length >= 21) {
     const span = Math.hypot(hand2d[9][0] - hand2d[0][0], hand2d[9][1] - hand2d[0][1]) || 1e-3;
     shape = hand2d.map(p => [(p[0] - hand2d[0][0]) / span, (p[1] - hand2d[0][1]) / span]);
   }
+  if (!loc && !shape) return null;
   return { loc, shape };
 }
 
@@ -95,7 +99,10 @@ function frameCost(fa, fb, acc) {
   for (const side of ['R', 'L']) {
     const a = fa[side], b = fb[side];
     if (a && b) {
-      const ld = dist2(a.loc, b.loc), sd = shapeDist(a.shape, b.shape);
+      // Location only compares when BOTH sides carry a body frame — a v1 hand-only
+      // reference scores on handshape alone rather than failing outright.
+      const ld = (a.loc && b.loc) ? dist2(a.loc, b.loc) : 0;
+      const sd = shapeDist(a.shape, b.shape);
       total += W.loc * ld + W.shape * sd;
       if (acc) { acc[side].loc += ld; acc[side].shape += sd; acc[side].n++; }
     } else if (a || b) {

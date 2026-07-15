@@ -5,9 +5,10 @@
    the attempt; recognition (normalize → DTW → nearest-template) scores it
    against the reference and returns grade + per-part feedback.
 
-   Reference templates come from schema-v2 recordings (frames carry `pose`
-   + `t`) — v1 hand-only signs can't be normalized to a body frame, so
-   they're not "testable" and are surfaced as such.
+   Reference templates: schema-v2 recordings (frames carry `pose` + `t`)
+   score placement AND handshape; v1 hand-only recordings have no body
+   frame, so recognition falls back to handshape-only scoring for them —
+   every sign in the library is testable.
    ============================================================ */
 
 import { TrackingCore } from './tracking-core.js';
@@ -28,7 +29,8 @@ function calibFromFrames(frames) {
   const med = (i) => S.map(s => s[i]).sort((a, b) => a - b)[Math.floor(S.length / 2)];
   return { shoulderMid: [med(0), med(1)], shoulderWidth: med(2) };
 }
-const isTestable = (rec) => !!(rec && Array.isArray(rec.landmarks) && rec.landmarks.some(f => f && f.pose));
+const isTestable = (rec) => !!(rec && Array.isArray(rec.landmarks)
+  && rec.landmarks.some(f => f && (f.pose || f.rightHand || f.leftHand)));
 
 export class TestController {
   constructor({ viewportId, videoId, overlayId = null, statusId, onResult = () => {} }) {

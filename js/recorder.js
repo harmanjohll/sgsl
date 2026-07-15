@@ -23,6 +23,7 @@ import { lerpFrame } from './interp.js';
 import * as signsSource from './signs-source.js';
 import { exportSign, importFile } from './export-import.js';
 import { reconstructionError } from './metrics.js';
+import { loadFineTune } from './calib-profile.js';
 
 // ─── State ──────────────────────────────────────────────────
 let avatar = null;
@@ -127,6 +128,7 @@ export async function init() {
   retarget.setAvatar(avatar);
 
   await setupMediaPipe();
+  if (suspended) releaseCamera();   // user left Contribute while the camera was starting
 
   document.getElementById('btn-rec-start')?.addEventListener('click', startRecording);
   document.getElementById('btn-rec-stop')?.addEventListener('click', stopRecording);
@@ -194,6 +196,52 @@ export async function init() {
 
 // Auto-init when module is imported
 init();
+
+// ─── Tab lifecycle: release/reacquire the camera ────────────
+// The webcam must not stay live (light on!) while the user is on Learn/Test —
+// and a lingering Contribute stream + a fresh Test stream on the same device
+// means two tracking pipelines fighting. app.js calls these on tab switches.
+let suspended = false;
+
+function releaseCamera() {
+  const videoEl = document.getElementById('rec-video');
+  try { videoEl?.srcObject?.getTracks().forEach((t) => t.stop()); } catch { /* already stopped */ }
+  if (videoEl) videoEl.srcObject = null;
+  try { camera?.stop?.(); } catch { /* legacy path */ }
+  const statusEl = document.getElementById('rec-camera-status');
+  if (statusEl) { statusEl.textContent = 'Camera paused.'; statusEl.classList.remove('hidden'); }
+}
+
+export function suspend() {
+  if (!inited || suspended) return;
+  suspended = true;
+  if (recording) stopRecording();
+  releaseCamera();
+}
+
+export async function resume() {
+  if (!inited) return init();
+  if (!suspended) return;
+  suspended = false;
+  const videoEl = document.getElementById('rec-video');
+  const statusEl = document.getElementById('rec-camera-status');
+  try {
+    if (workerTracking) {
+      // Worker + models stay warm across a suspend; only the stream is re-acquired.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' }, audio: false,
+      });
+      videoEl.srcObject = stream;
+      await videoEl.play();
+    } else if (camera) {
+      await camera.start();
+    }
+    if (statusEl) statusEl.classList.add('hidden');
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Camera error: ${err.message}`; statusEl.classList.remove('hidden'); }
+    setRecStatus(`Camera failed: ${err.message}`, 'error');
+  }
+}
 
 // ─── MediaPipe Setup ────────────────────────────────────────
 async function setupMediaPipe() {
@@ -1075,10 +1123,17 @@ function renderPreviewFrame(frame) {
 
 // Build the canonical sign record — identical shape to the committed
 // signs/<label>.json files and the (future) Postgres `signs` row.
+// Free-form topic tags from the Contribute tags input (comma-separated, lowercased).
+function readTags() {
+  const raw = document.getElementById('rec-tags')?.value || '';
+  return [...new Set(raw.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))];
+}
+
 function buildRecord(label) {
   return {
     label,
     schema_version: 2,
+    tags: readTags(),
     landmarks: frames,
     calibration: calibBaseline,
     calibrationSettings: { ...calibSettings },   // palm-rotation + smoothing used for this take
@@ -1197,6 +1252,10 @@ function saveCalibSettings() {
 }
 function applyCalibSettings() {   // push BOTH hands' calibration to the retarget
   for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, calibSettings[side]);
+  // Device-global fine-tune (Learn tab ⚙ panel) rides on top, so the Contribute
+  // mirror shows the same height/depth/extension the other tabs render with.
+  const ft = loadFineTune();
+  if (ft && Object.keys(ft).length) for (const side of ['Right', 'Left']) retarget?.setHandTuning?.(side, ft);
 }
 function wireCalibControls() {
   // Generic slider wiring: live label (via fmt), retarget update, persist. One per knob.

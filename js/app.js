@@ -13,7 +13,9 @@
 
 import { Playback } from './player.js';
 import * as signsSource from './signs-source.js';
+import * as store from './store.js';
 import { getEditsFor, saveEditsFor } from './sign-edits.js';
+import { loadFineTune, saveFineTune } from './calib-profile.js';
 import { signText, resolveLabels } from './sentence-engine.js';
 import { parseSentence } from './gloss.js';
 import { LearnController } from './learn.js';
@@ -26,15 +28,17 @@ let activeTab = 'learn';
 tabs.forEach(tab => {
   tab.addEventListener('click', () => {
     const target = tab.dataset.tab;
-    // Release the Test camera+worker when leaving Test — otherwise it keeps running and,
-    // opening Contribute, a SECOND camera+worker would spin up on the same device.
-    if (activeTab === 'test' && target !== 'test') { testCtl?.stop(); resetTestUI(); }
+    if (target === activeTab) return;
+    // Release cameras when their tab is left — the webcam must not stay live in the
+    // background (privacy), and two live pipelines on one device wreck tracking.
+    if (activeTab === 'test') { testCtl?.stop(); resetTestUI(); }
+    if (activeTab === 'contribute') recorderMod?.suspend();
     tabs.forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     contents.forEach(c => c.classList.toggle('active', c.id === `tab-${target}`));
-    if (target === 'learn' && !learnLoaded) initLearn();
+    if (target === 'learn') { if (!learnLoaded) initLearn(); else refreshLearn(); }
     if (target === 'test') { if (!testLoaded) initTest(); else resetTestUI(); }
-    if (target === 'contribute' && !contributeLoaded) initContribute();
+    if (target === 'contribute') { if (!contributeLoaded) initContribute(); else recorderMod?.resume(); }
     activeTab = target;
   });
 });
@@ -44,6 +48,10 @@ function resetTestUI() {
   const b = (id, dis) => { const el = document.getElementById(id); if (el) el.disabled = dis; };
   b('btn-test-start', false); b('btn-test-attempt', true); b('btn-test-done', true);
   document.getElementById('test-camera-status')?.classList.remove('hidden');
+  // Stale sign buttons from the previous camera session would call setTarget on a
+  // stopped core and re-enable Attempt — clear them until the camera restarts.
+  const list = document.getElementById('test-signlist');
+  if (list) list.innerHTML = '<p class="hint">Start the camera to load testable signs…</p>';
   setStatus('test-status', 'Camera stopped. Press "Start camera" to test again.', 'info');
 }
 
@@ -58,6 +66,16 @@ function setStatus(id, msg, type) {
 let learnLoaded = false;
 let learnPlayback = null;
 let learn = null;
+let startLessonRef = () => {};
+
+// Re-entering Learn re-snapshots the library: signs recorded in Contribute since
+// initLearn must show up without a page reload (list, lesson availability, chips).
+async function refreshLearn() {
+  if (!learn) return;
+  await learn.load();
+  if (!learn.current) learn.renderLessonList(document.getElementById('learn-lessons'), startLessonRef);
+  await renderLibraryList('learn-list', learnPlayback);
+}
 
 async function initLearn() {
   learnLoaded = true;
@@ -86,6 +104,7 @@ async function initLearn() {
     if (prompt) prompt.innerHTML = `<span class="lesson-word">${step.label}</span><span class="lesson-count">${step.index + 1} / ${step.total}</span>`;
   };
   const startLesson = (id) => { const step = learn.startLesson(id); if (step) showStep(step); };
+  startLessonRef = startLesson;
   learn.renderLessonList(lessonList, startLesson);
   document.getElementById('btn-learn-practice')?.addEventListener('click', () => learn.replay());
   document.getElementById('btn-learn-gotit')?.addEventListener('click', () => showStep(learn.gotIt()));
@@ -124,24 +143,92 @@ async function initLearn() {
   document.getElementById('btn-learn-stop')?.addEventListener('click', () => learnPlayback.stop());
   wireSpeed('learn-speed', 'learn-speed-label', learnPlayback);
   wireEditPanel(() => learnPlayback);
+  wireFineTunePanel(() => learnPlayback);
   await renderLibraryList('learn-list', learnPlayback);
 }
 
-// ── Per-sign edit panel (trim/speed overlay; replays live on change) ─────────
+// ── Global fine-tune (this device): height/depth/extension/smoothing ─────────
+// Saved to sgsl.finetune.v1 and applied by calib-profile.js to EVERY renderer.
+// Only values moved off neutral are stored, so recordings' own settings still win
+// wherever the user hasn't overridden.
+const FT_NEUTRAL = { heightOffset: 0, reachDepth: 0.9, reachGain: 1, smoothing: 0.5 };
+const FT_SLIDERS = [
+  ['ft-height', 'heightOffset', (v) => v.toFixed(2)],
+  ['ft-depth', 'reachDepth', (v) => v.toFixed(2)],
+  ['ft-ext', 'reachGain', (v) => v.toFixed(2)],
+  ['ft-smooth', 'smoothing', (v) => `${Math.round(v * 100)}%`],
+];
+function wireFineTunePanel(playbackRef) {
+  const setUI = (ft) => {
+    for (const [id, key, fmt] of FT_SLIDERS) {
+      const el = document.getElementById(id), lb = document.getElementById(id + '-label');
+      const v = typeof ft[key] === 'number' ? ft[key] : FT_NEUTRAL[key];
+      if (el) el.value = v;
+      if (lb) lb.textContent = fmt(v);
+    }
+  };
+  setUI(loadFineTune());
+  const readAndSave = () => {
+    const ft = {};
+    for (const [id, key] of FT_SLIDERS) {
+      const v = Number(document.getElementById(id)?.value);
+      if (isFinite(v) && Math.abs(v - FT_NEUTRAL[key]) > 1e-9) ft[key] = v;
+    }
+    saveFineTune(ft);
+    // Preview the change: replay whatever sign is selected (profile re-applies on play).
+    if (editLabel) {
+      clearTimeout(editReplayTimer);
+      editReplayTimer = setTimeout(() => playbackRef()?.playLabel(editLabel), 250);
+    }
+  };
+  for (const [id, , fmt] of FT_SLIDERS) {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', () => {
+      const lb = document.getElementById(id + '-label');
+      if (lb) lb.textContent = fmt(Number(el.value));
+      readAndSave();
+    });
+  }
+  document.getElementById('ft-reset')?.addEventListener('click', () => {
+    saveFineTune({});
+    setUI({});
+    if (editLabel) playbackRef()?.playLabel(editLabel);
+  });
+}
+
+// ── Per-sign edit panel (trim/speed + render overrides; replays live on change) ──
 let editLabel = null;
+let editMeta = null;   // { label, source, tags } of the selected sign
 let editReplayTimer = null;
 let editPlaybackRef = () => null;
-function selectSignForEdit(label) {
-  editLabel = label;
+async function selectSignForEdit(meta) {
+  const m = typeof meta === 'string' ? { label: meta, source: 'library', tags: [] } : meta;
+  editLabel = m.label;
+  editMeta = m;
   const panel = document.getElementById('lib-edit');
   if (!panel) return;
   panel.classList.remove('hidden');
-  const e = getEditsFor(label) || {};
+  const e = getEditsFor(m.label) || {};
   setEditControl('lib-trim-start', e.trimStartMs || 0, (v) => `${(v / 1000).toFixed(2)}s`);
   setEditControl('lib-trim-end', e.trimEndMs || 0, (v) => `${(v / 1000).toFixed(2)}s`);
   setEditControl('lib-sign-speed', e.speed || 1, (v) => `${v.toFixed(2)}x`);
+  setEditControl('lib-height', e.heightOffset ?? 0, (v) => v.toFixed(2));
+  setEditControl('lib-depth', e.reachDepth ?? 0.9, (v) => v.toFixed(2));
+  setEditControl('lib-ext', e.reachGain ?? 1, (v) => v.toFixed(2));
   const lab = document.getElementById('lib-edit-label');
-  if (lab) lab.textContent = `Edit "${label}":`;
+  if (lab) lab.textContent = `Edit "${m.label}":`;
+  // Tags: editable for device recordings (rewrites the stored record); read-only
+  // for committed library signs (their tags live in the repo JSON).
+  const tagsRow = document.getElementById('lib-tags-row');
+  const tagsInput = document.getElementById('lib-tags');
+  if (tagsRow && tagsInput) {
+    tagsRow.classList.remove('hidden');
+    tagsInput.value = (m.tags || []).join(', ');
+    tagsInput.disabled = m.source !== 'local';
+    tagsInput.placeholder = m.source === 'local'
+      ? 'tags, comma-separated — press Enter to save'
+      : 'tags of built-in signs are set in the repo';
+  }
 }
 function setEditControl(id, value, fmt) {
   const el = document.getElementById(id), lb = document.getElementById(id + '-label');
@@ -150,11 +237,22 @@ function setEditControl(id, value, fmt) {
 }
 function wireEditPanel(playbackRef) {
   editPlaybackRef = playbackRef;
-  const read = () => ({
-    trimStartMs: Number(document.getElementById('lib-trim-start')?.value || 0),
-    trimEndMs: Number(document.getElementById('lib-trim-end')?.value || 0),
-    speed: Number(document.getElementById('lib-sign-speed')?.value || 1),
-  });
+  const read = () => {
+    const out = {
+      trimStartMs: Number(document.getElementById('lib-trim-start')?.value || 0),
+      trimEndMs: Number(document.getElementById('lib-trim-end')?.value || 0),
+      speed: Number(document.getElementById('lib-sign-speed')?.value || 1),
+    };
+    // Render overrides only count when moved off neutral — otherwise the record's
+    // own calibration (or the global fine-tune) keeps deciding.
+    const h = Number(document.getElementById('lib-height')?.value ?? 0);
+    if (Math.abs(h) > 1e-9) out.heightOffset = h;
+    const d = Number(document.getElementById('lib-depth')?.value ?? 0.9);
+    if (Math.abs(d - 0.9) > 1e-9) out.reachDepth = d;
+    const g = Number(document.getElementById('lib-ext')?.value ?? 1);
+    if (Math.abs(g - 1) > 1e-9) out.reachGain = g;
+    return out;
+  };
   const onChange = (id, fmt) => {
     const el = document.getElementById(id);
     el?.addEventListener('input', () => {
@@ -169,12 +267,51 @@ function wireEditPanel(playbackRef) {
   onChange('lib-trim-start', (v) => `${(v / 1000).toFixed(2)}s`);
   onChange('lib-trim-end', (v) => `${(v / 1000).toFixed(2)}s`);
   onChange('lib-sign-speed', (v) => `${v.toFixed(2)}x`);
+  onChange('lib-height', (v) => v.toFixed(2));
+  onChange('lib-depth', (v) => v.toFixed(2));
+  onChange('lib-ext', (v) => v.toFixed(2));
   document.getElementById('lib-edit-reset')?.addEventListener('click', () => {
     if (!editLabel) return;
     saveEditsFor(editLabel, null);
-    selectSignForEdit(editLabel);
+    selectSignForEdit(editMeta || editLabel);
     editPlaybackRef()?.playLabel(editLabel);
   });
+  // Save tags on a device recording (Enter/blur) — rewrites the stored record.
+  document.getElementById('lib-tags')?.addEventListener('change', async (ev) => {
+    if (!editMeta || editMeta.source !== 'local') return;
+    const rec = await store.getSign(editMeta.label).catch(() => null);
+    if (!rec) return;
+    rec.tags = [...new Set(ev.target.value.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))];
+    await store.putSign(rec);
+    editMeta.tags = rec.tags;
+    setStatus('learn-status', `Tags saved for "${editMeta.label}".`, 'success');
+    renderLibraryList('learn-list', editPlaybackRef());
+  });
+}
+
+// Active library tag filter (chip bar above the list); null = show everything.
+let activeTagFilter = null;
+
+function renderTagBar(manifest, listId, playback) {
+  const bar = document.getElementById('learn-tagbar');
+  if (!bar) return;
+  const tags = [...new Set(manifest.flatMap(s => s.tags || []))].sort();
+  bar.innerHTML = '';
+  if (!tags.length) { bar.classList.add('hidden'); activeTagFilter = null; return; }
+  bar.classList.remove('hidden');
+  if (activeTagFilter && !tags.includes(activeTagFilter)) activeTagFilter = null;
+  const mkChip = (label, val) => {
+    const c = document.createElement('button');
+    c.className = `chip tag-chip ${activeTagFilter === val ? 'chip-on' : ''}`;
+    c.textContent = label;
+    c.addEventListener('click', () => {
+      activeTagFilter = (activeTagFilter === val) ? null : val;
+      renderLibraryList(listId, playback);
+    });
+    bar.appendChild(c);
+  };
+  mkChip('all', null);
+  for (const t of tags) mkChip(t, t);
 }
 
 async function renderLibraryList(listId, playback) {
@@ -183,25 +320,41 @@ async function renderLibraryList(listId, playback) {
   let manifest = [];
   try { manifest = await signsSource.getManifest(); }
   catch (err) { setStatus('learn-status', `Failed to load signs: ${err.message}`, 'error'); return; }
+  renderTagBar(manifest, listId, playback);
   list.innerHTML = '';
   if (!manifest.length) { list.innerHTML = '<p class="hint">No signs yet. Record one in Contribute.</p>'; return; }
-  for (const s of manifest) {
+  const shown = activeTagFilter ? manifest.filter(s => (s.tags || []).includes(activeTagFilter)) : manifest;
+  if (!shown.length) { list.innerHTML = `<p class="hint">No signs tagged "${activeTagFilter}".</p>`; return; }
+  for (const s of shown) {
     const row = document.createElement('div');
     row.className = 'sign-row';
     const btn = document.createElement('button');
     btn.className = 'sign-btn';
     btn.textContent = s.label;
-    btn.title = `${s.frames} frames · ${s.source}`;
+    btn.title = `${s.frames} frames · ${s.source}`
+      + (s.tags?.length ? ` · ${s.tags.join(', ')}` : '');
+    // Click = SELECT (highlight + open the edit panel). Playing is the ▶ button —
+    // browsing the library must not blast a sign on every click.
     btn.addEventListener('click', () => {
       list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      selectSignForEdit(s.label);
-      playback.playLabel(s.label);
+      selectSignForEdit(s);
     });
     const tag = document.createElement('span');
     tag.className = `src-tag src-${s.source}`;
     tag.textContent = s.source === 'local' ? 'device' : s.source;
-    row.appendChild(btn); row.appendChild(tag);
+    const play = document.createElement('button');
+    play.className = 'sign-play';
+    play.textContent = '▶';
+    play.title = `Play "${s.label}"`;
+    play.addEventListener('click', (e) => {
+      e.stopPropagation();
+      list.querySelectorAll('.sign-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectSignForEdit(s);
+      playback.playLabel(s.label);
+    });
+    row.appendChild(btn); row.appendChild(tag); row.appendChild(play);
     const del = document.createElement('button');
     del.className = 'sign-del';
     del.textContent = '×';
@@ -265,6 +418,9 @@ async function initTest() {
   const doneBtn = document.getElementById('btn-test-done');
   startBtn?.addEventListener('click', async () => {
     startBtn.disabled = true;
+    // Fresh camera session = fresh session tally (it read "3/7 passed" forever otherwise).
+    testSession = { attempts: 0, passed: 0 };
+    setStatus('test-score', 'Session: 0/0 passed.', 'info');
     setStatus('test-status', 'Starting camera…', 'loading');
     const ok = await testCtl.start();
     document.getElementById('test-camera-status')?.classList.add('hidden');
@@ -289,7 +445,7 @@ async function initTest() {
     const list = document.getElementById('test-signlist');
     if (!list) return;
     list.innerHTML = '';
-    if (!labels.length) { list.innerHTML = '<p class="hint">No testable signs yet. Record some in Contribute (they need the new format).</p>'; return; }
+    if (!labels.length) { list.innerHTML = '<p class="hint">No signs in the library yet. Record one in Contribute.</p>'; return; }
     for (const label of labels) {
       const btn = document.createElement('button');
       btn.className = 'sign-btn';
@@ -309,9 +465,10 @@ async function initTest() {
 
 // ─── Contribute (record) ────────────────────────────────────
 let contributeLoaded = false;
+let recorderMod = null;   // module handle for camera suspend/resume on tab switches
 async function initContribute() {
   contributeLoaded = true;
-  await import('./recorder.js');
+  recorderMod = await import('./recorder.js');
 }
 
 // ─── Shared speed-slider wiring ─────────────────────────────
@@ -326,8 +483,8 @@ function wireSpeed(sliderId, labelId, playback) {
   });
 }
 
-// Release the camera if the page is hidden/closed (privacy + no zombie stream).
-window.addEventListener('pagehide', () => testCtl?.stop());
+// Release the cameras if the page is hidden/closed (privacy + no zombie stream).
+window.addEventListener('pagehide', () => { testCtl?.stop(); recorderMod?.suspend(); });
 
 // Open Learn by default.
 initLearn();
