@@ -60,5 +60,24 @@ const abs = (x, y) => Math.abs(x - y);
     r.path[r.path.length - 1][0] === 3 && r.path[r.path.length - 1][1] === 4);
 }
 
+// 7) openEnds: reference embedded in a longer sequence with junk on both ends
+//    matches for free (transition tolerance), while closed DTW pays for the junk
+{
+  const sign = [1, 5, 9, 5, 1];
+  const padded = [0, 0, 0, ...sign, 0, 0, 0];
+  const open = dtw(padded, sign, abs, { openEnds: true });
+  const closed = dtw(padded, sign, abs);
+  check('openEnds: embedded match is free', open.distance === 0);
+  check('openEnds: cheaper than closed on padded input', open.normDistance < closed.normDistance);
+  const [i0, j0] = open.path[0], [i1, j1] = open.path[open.path.length - 1];
+  check('openEnds: reference fully consumed', j0 === 0 && j1 === sign.length - 1);
+  check('openEnds: window sits inside the attempt', i0 === 3 && i1 === 3 + sign.length - 1);
+}
+// 8) openEnds: a genuinely different sequence still scores far
+{
+  const open = dtw([0, 0, 9, 1, 9, 0, 0], [1, 5, 9, 5, 1], abs, { openEnds: true });
+  check('openEnds: different content still costly', open.normDistance > 0.5);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

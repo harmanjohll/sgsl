@@ -34,7 +34,39 @@
       <button class="tab" data-tab="test">Test</button>
       <button class="tab" data-tab="contribute">Contribute</button>
     </nav>
+    <button id="btn-settings" class="settings-btn" title="Avatar settings (this device)">⚙</button>
   </header>
+
+  <!-- Device-global avatar fine-tune: applies to playback AND both live mirrors.
+       Lives app-global (header ⚙), not inside a tab — it tunes the avatar everywhere. -->
+  <div id="settings-popover" class="settings-popover hidden">
+    <div class="calib-group-title">⚙ Fine-tune avatar (this device)</div>
+    <div class="control-row">
+      <label class="speed-control">Hand height:
+        <input type="range" id="ft-height" min="-0.5" max="0.5" step="0.02" value="0">
+        <span id="ft-height-label">0.00</span>
+      </label>
+      <label class="speed-control">Depth:
+        <input type="range" id="ft-depth" min="0.4" max="2.5" step="0.05" value="0.9">
+        <span id="ft-depth-label">0.90</span>
+      </label>
+    </div>
+    <div class="control-row">
+      <label class="speed-control">Extension:
+        <input type="range" id="ft-ext" min="0.7" max="1.8" step="0.05" value="1">
+        <span id="ft-ext-label">1.00</span>
+      </label>
+      <label class="speed-control">Smoothing:
+        <input type="range" id="ft-smooth" min="0" max="1" step="0.05" value="0.5">
+        <span id="ft-smooth-label">50%</span>
+      </label>
+      <button id="ft-reset" class="btn">Reset</button>
+    </div>
+    <p class="hint">Adjusts how signs render on this device — everywhere (Learn playback, Test and
+      Contribute mirrors). The per-sign sliders in Learn override these for one sign.
+      Fingers looking wrong on the mirror? Run <strong>✨ Calibrate hands</strong> in the Test tab
+      (or Contribute → Advanced).</p>
+  </div>
 
   <!-- ─── Learn: text → sign (lessons + explore) ───────────────── -->
   <main id="tab-learn" class="main tab-content active">
@@ -120,31 +152,6 @@
           <span class="hint">Tags:</span>
           <input type="text" id="lib-tags" class="rec-input" placeholder="tags, comma-separated">
         </div>
-        <!-- Device-global avatar fine-tune: applies to playback AND both live mirrors -->
-        <details id="finetune-panel" class="advanced">
-          <summary>⚙ Fine-tune avatar (this device)</summary>
-          <div class="control-row">
-            <label class="speed-control">Hand height:
-              <input type="range" id="ft-height" min="-0.5" max="0.5" step="0.02" value="0">
-              <span id="ft-height-label">0.00</span>
-            </label>
-            <label class="speed-control">Depth:
-              <input type="range" id="ft-depth" min="0.4" max="2.5" step="0.05" value="0.9">
-              <span id="ft-depth-label">0.90</span>
-            </label>
-            <label class="speed-control">Extension:
-              <input type="range" id="ft-ext" min="0.7" max="1.8" step="0.05" value="1">
-              <span id="ft-ext-label">1.00</span>
-            </label>
-            <label class="speed-control">Smoothing:
-              <input type="range" id="ft-smooth" min="0" max="1" step="0.05" value="0.5">
-              <span id="ft-smooth-label">50%</span>
-            </label>
-            <button id="ft-reset" class="btn">Reset</button>
-          </div>
-          <p class="hint">Adjusts how signs render on this device — everywhere (Learn playback,
-            Test and Contribute mirrors). The per-sign sliders above override these for one sign.</p>
-        </details>
       </div>
     </section>
   </main>
@@ -173,14 +180,18 @@
         <button id="btn-test-start" class="btn btn-record">Start camera</button>
         <button id="btn-test-attempt" class="btn" disabled>● Sign the word</button>
         <button id="btn-test-done" class="btn" disabled>I'm done</button>
+        <button id="btn-test-calibrate" class="btn" disabled>✨ Calibrate hands</button>
       </div>
       <label class="speed-control">Scoring strictness:
         <input type="range" id="test-strictness" min="0" max="2" step="1" value="1">
         <span id="test-strictness-label">Normal</span>
       </label>
-      <p class="hint">Scoring already ignores where you stand, your size in frame, and how fast you
-        sign — strictness only tunes how closely your handshape and movement must match. (A learned
-        per-signer model comes later, once there are many examples per sign.)</p>
+      <p class="hint">Scoring ignores where you stand, your size in frame, how fast you sign, a
+        tilted wrist, raising/dropping your hand around the sign, and which hand you sign with —
+        strictness only tunes how closely the handshape and movement themselves must match.</p>
+      <p class="hint"><strong>✨ Calibrate hands</strong> aligns the mirror avatar's fingers and palm
+        with yours (hold a flat palm to the camera, right hand then left). It fixes what you
+        <em>see</em> — grading always reads the raw camera, so it never changes your score.</p>
       <div class="calib-group-title">Pick a sign to practice</div>
       <div id="test-signlist" class="sign-list"><p class="hint">Start the camera to load testable signs…</p></div>
       <div id="test-result" class="quality-overall"></div>

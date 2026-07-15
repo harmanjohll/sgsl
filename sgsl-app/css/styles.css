@@ -39,6 +39,27 @@ html, body {
   font-size: 13px;
   color: var(--text-dim);
 }
+.settings-btn {
+  background: transparent; border: 1px solid transparent;
+  border-radius: 6px; color: var(--text-dim); padding: 4px 10px;
+  cursor: pointer; font: 500 15px/1.4 inherit; transition: all 0.15s;
+}
+.settings-btn:hover { color: var(--text); border-color: var(--border); }
+.settings-btn.open { color: #fff; background: var(--accent); border-color: var(--accent); }
+
+/* App-global avatar settings popover (anchored under the header ⚙) */
+.settings-popover {
+  position: absolute;
+  top: 60px; right: 16px;
+  z-index: 100;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.settings-popover .control-row { margin: 8px 0; }
 
 /* Main layout */
 .main {
