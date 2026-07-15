@@ -204,10 +204,22 @@ export function suspend() {
   releaseCamera();
 }
 
+/** Re-apply device tuning + global fine-tune to the live mirror (the header ⚙
+ *  popover calls this so slider changes show up without restarting the camera). */
+export function reapplyCalibration() {
+  if (inited) applyCalibSettings();
+}
+
 export async function resume() {
   if (!inited) return init();
   if (!suspended) return;
   suspended = false;
+  // The Test tab's "Calibrate hands" also writes sgsl.calib.v1 — refresh the cached
+  // settings on re-entry, or the next slider touch here would save stale values back
+  // over the just-completed calibration (and the mirror would render the old tuning).
+  loadCalibSettings();
+  applyCalibSettings();
+  refreshCalibUI?.();
   const videoEl = document.getElementById('rec-video');
   const statusEl = document.getElementById('rec-camera-status');
   try {

@@ -214,6 +214,18 @@ const ref = makeSign({ shape: 'flat', path: 'wave' });
   const spurious = r.feedback.some(f => f.includes('missing') || f.includes('drifted') || f.includes('off'));
   check('perfect match gets no spurious complaints', !spurious, `(feedback: ${r.feedback.join(' | ')})`);
 }
+// 19) orientation forgiveness is BOUNDED: a small tilt is free (test 14), but a hand
+//     pointing the wrong way is a different sign — 90°/180° must fail, not score 100.
+{
+  const rot = (hand, deg) => {
+    const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), [wx, wy] = hand[0];
+    return hand.map(p => [wx + (p[0] - wx) * c - (p[1] - wy) * s, wy + (p[0] - wx) * s + (p[1] - wy) * c, 0]);
+  };
+  const at = (deg) => scoreAttempt(ref.frames.map(f => ({ ...f, rightHand: rot(f.rightHand, deg) })), ref.calib, ref.frames, ref.calib);
+  const r90 = at(90), r180 = at(180);
+  check('90° rotated hand fails', r90.pass === false, `(score ${r90.score})`);
+  check('180° (fingers-down) hand fails', r180.pass === false, `(score ${r180.score})`);
+}
 
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);

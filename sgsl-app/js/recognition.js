@@ -32,7 +32,10 @@ import { dtw } from './dtw.js';
 // Cost weights + score mapping — a tuned geometric baseline (thresholds are
 // meant to be re-tuned against real attempts; the tests assert ORDERING and
 // INVARIANCE, not absolute calibration).
-const W = { loc: 1.0, shape: 2.2, presence: 1.4, shapeMissing: 0.5 };
+const W = { loc: 1.0, shape: 2.2, presence: 1.4, shapeMissing: 0.5, orient: 1.0 };
+// Wrist-tilt dead zone: orientation differences up to this are free (shaky wrists,
+// camera angle); beyond it they cost linearly — fingers-down is NOT fingers-up.
+const ORIENT_FREE_RAD = 30 * Math.PI / 180;
 const SCORE_TAU = 0.42;    // score = 100·exp(−normDistance / TAU)
 const PASS_SCORE = 55;     // grade C — "close enough to pass"
 
@@ -71,20 +74,24 @@ function normHand(hand2d, poseWrist, bf) {
   const wrist = hand2d?.[0] || (poseOk ? [poseWrist[0], poseWrist[1]] : null);
   if (!wrist) return null;
   const loc = bf ? [(wrist[0] - bf.mid[0]) / bf.sw, (wrist[1] - bf.mid[1]) / bf.sw] : null;
-  let shape = null;
+  let shape = null, ang = null;
   if (hand2d && hand2d.length >= 21) {
     const vx = hand2d[9][0] - hand2d[0][0], vy = hand2d[9][1] - hand2d[0][1];
     const span = Math.hypot(vx, vy) || 1e-3;
     // Rotate so wrist→middle-MCP points up: wrist tilt must not read as a wrong
-    // handshape (a 10° tilt used to score like a different sign entirely).
-    const ang = Math.atan2(vx, -vy), c = Math.cos(ang), s = Math.sin(ang);
+    // handshape (a 10° tilt used to score like a different sign entirely). The
+    // removed angle is KEPT as its own channel — frameCost charges for attempt/
+    // reference orientation differences beyond a dead zone, because a hand held
+    // fingers-down is a different sign from fingers-up, not a tilted one.
+    ang = Math.atan2(vx, -vy);
+    const c = Math.cos(ang), s = Math.sin(ang);
     shape = hand2d.map(p => {
       const x = (p[0] - hand2d[0][0]) / span, y = (p[1] - hand2d[0][1]) / span;
       return [x * c + y * s, y * c - x * s];
     });
   }
   if (!loc && !shape) return null;
-  return { loc, shape };
+  return { loc, shape, ang };
 }
 
 export function normalizeFrame(frame, calib) {
@@ -117,6 +124,7 @@ function mirrorSeq(seq) {
   const flip = (h) => h && {
     loc: h.loc ? [-h.loc[0], h.loc[1]] : null,
     shape: h.shape ? h.shape.map(p => [-p[0], p[1]]) : null,
+    ang: h.ang == null ? null : -h.ang,   // reflection negates the tilt angle
   };
   return seq.map(f => ({ R: flip(f.L), L: flip(f.R) }));
 }
@@ -129,6 +137,14 @@ function shapeDist(a, b) {
   return s / n;
 }
 
+/** Wrapped angular difference beyond the free dead zone (0 for a small tilt). */
+function orientDist(a, b) {
+  if (a == null || b == null) return 0;
+  let d = Math.abs(a - b) % (2 * Math.PI);
+  if (d > Math.PI) d = 2 * Math.PI - d;
+  return Math.max(0, d - ORIENT_FREE_RAD);
+}
+
 /** Per-frame cost + a per-part breakdown (accumulated by scoreAttempt for feedback). */
 function frameCost(fa, fb, acc) {
   let total = 0;
@@ -139,8 +155,9 @@ function frameCost(fa, fb, acc) {
       // reference scores on handshape alone rather than failing outright.
       const ld = (a.loc && b.loc) ? dist2(a.loc, b.loc) : 0;
       const sd = shapeDist(a.shape, b.shape);
-      total += W.loc * ld + W.shape * sd;
-      if (acc) { acc[side].loc += ld; acc[side].shape += sd; acc[side].n++; }
+      const od = orientDist(a.ang, b.ang);
+      total += W.loc * ld + W.shape * sd + W.orient * od;
+      if (acc) { acc[side].loc += ld; acc[side].shape += sd; acc[side].orient += od; acc[side].n++; }
     } else if (a || b) {
       total += W.presence;
       if (acc) { acc[side].presence++; acc[side].n++; }
@@ -177,7 +194,7 @@ export function scoreAttempt(attempt, attemptCalib, reference, refCalib, level =
 
   // Per-channel breakdown along the ALIGNMENT PATH only (accumulating inside the
   // DTW cost function counted every explored cell and blamed the wrong things).
-  const acc = { R: { loc: 0, shape: 0, presence: 0, n: 0 }, L: { loc: 0, shape: 0, presence: 0, n: 0 } };
+  const acc = { R: { loc: 0, shape: 0, orient: 0, presence: 0, n: 0 }, L: { loc: 0, shape: 0, orient: 0, presence: 0, n: 0 } };
   for (const [i, j] of path) frameCost(used[i], B[j], acc);
 
   // Feedback: name the worst channel per active hand. Sides are named from the
@@ -187,6 +204,7 @@ export function scoreAttempt(attempt, attemptCalib, reference, refCalib, level =
     const c = acc[side]; if (!c.n) continue;
     const label = (side === 'R') !== mirrored ? 'right' : 'left';
     if (c.presence > c.n * 0.4) feedback.push(`Your ${label} hand was missing for much of the sign.`);
+    else if (c.orient / Math.max(1, c.n) > 0.25) feedback.push(`Your ${label} hand was pointing the wrong way — check which way the fingers face.`);
     else if (c.shape / Math.max(1, c.n) > 0.14) feedback.push(`Your ${label} handshape drifted from the target.`);
     else if (c.loc / Math.max(1, c.n) > 0.3) feedback.push(`Your ${label} hand's placement/movement was off.`);
   }

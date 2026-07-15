@@ -15,7 +15,7 @@ import { Playback } from './player.js';
 import * as signsSource from './signs-source.js';
 import * as store from './store.js';
 import { getEditsFor, saveEditsFor } from './sign-edits.js';
-import { loadFineTune, saveFineTune } from './calib-profile.js';
+import { loadFineTune, saveFineTune, configureRetarget } from './calib-profile.js';
 import { signText, resolveLabels } from './sentence-engine.js';
 import { parseSentence } from './gloss.js';
 import { LearnController } from './learn.js';
@@ -199,6 +199,7 @@ function wireFineTunePanel(playbackRef) {
       if (isFinite(v) && Math.abs(v - FT_NEUTRAL[key]) > 1e-9) ft[key] = v;
     }
     saveFineTune(ft);
+    reapplyLiveMirrors();
     // Preview the change: replay the selected sign — only while Learn is showing (the
     // popover is app-global now; a hidden avatar must not replay under Test/Contribute).
     if (editLabel && activeTab === 'learn') {
@@ -217,8 +218,17 @@ function wireFineTunePanel(playbackRef) {
   document.getElementById('ft-reset')?.addEventListener('click', () => {
     saveFineTune({});
     setUI({});
-    if (editLabel) playbackRef()?.playLabel(editLabel);
+    reapplyLiveMirrors();
+    if (editLabel && activeTab === 'learn') playbackRef()?.playLabel(editLabel);
   });
+}
+
+// Push a fine-tune change to any LIVE mirror immediately: playback re-applies its
+// profile on every play, but the Test/Contribute mirrors run continuously and would
+// otherwise keep rendering the old tuning until restarted.
+function reapplyLiveMirrors() {
+  if (testCtl?.core?.retarget) configureRetarget(testCtl.core.retarget, {});
+  recorderMod?.reapplyCalibration?.();
 }
 
 // ── Per-sign edit panel (trim/speed + render overrides; replays live on change) ──
@@ -452,10 +462,14 @@ async function initTest() {
     setStatus('test-score', 'Session: 0/0 passed.', 'info');
     setStatus('test-status', 'Starting camera…', 'loading');
     const ok = await testCtl.start();
+    // The user may have left the Test tab while the camera was starting — stop()
+    // nulled the core; enabling controls now would wire buttons to a dead session.
+    if (!testCtl?.core) { resetTestUI(); return; }
     document.getElementById('test-camera-status')?.classList.add('hidden');
     if (!ok) { startBtn.disabled = false; return; }
     if (calibBtn) calibBtn.disabled = false;
     const labels = await testCtl.loadTemplates();
+    if (!testCtl?.core) { resetTestUI(); return; }
     renderTestList(labels);
   });
   attemptBtn?.addEventListener('click', () => { testCtl.beginAttempt(); doneBtn.disabled = false; testCtl.onCalibrating(false); });

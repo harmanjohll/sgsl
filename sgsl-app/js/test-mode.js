@@ -134,9 +134,14 @@ export class TestController {
     this.capturing = false;
     const frames = trimFrames(this._buf);
     if (!frames || frames.length < 5) { this._status('Attempt too short — try again.', 'error'); return; }
-    // Shoulder frame if visible; null is fine — hand-only references never score
-    // location, so an out-of-frame shoulder must not hard-reject the attempt.
+    // Shoulder frame if visible. Missing shoulders only matter when the target
+    // reference scores LOCATION (v2, body-framed): silently dropping the loc
+    // channel there would grade a right handshape in the wrong place as perfect.
+    // Hand-only (v1) references never score location — don't hard-reject those.
     const calib = calibFromFrames(frames);
+    const target = this.templates.find(t => t.label === this.target);
+    const targetScoresLoc = !!(target && (target.calibration || target.frames?.some(f => f?.pose)));
+    if (!calib && targetScoresLoc) { this._status('Could not see your shoulders — step back so your upper body is in frame, and try again.', 'error'); return; }
     const verdict = verifyAgainstTarget(frames, calib, this.target, this.templates, this._level);
     this._status(`${verdict.pass ? '✅' : '❌'} ${this.target}: ${verdict.grade} (${verdict.score}/100)`, verdict.pass ? 'success' : 'error');
     this.onResult(verdict);
