@@ -14,6 +14,8 @@
 import { TrackingCore } from './tracking-core.js';
 import { AutoCut, trimFrames } from './autocut.js';
 import { verifyAgainstTarget } from './recognition.js';
+import { createAutoTuner } from './autotune-driver.js';
+import { applySolvedOrientation, configureRetarget } from './calib-profile.js';
 import * as signsSource from './signs-source.js';
 
 // Median shoulder frame from an attempt's pose stream (the live calibration a scorer needs).
@@ -43,10 +45,44 @@ export class TestController {
     this._cut = null;
     this._start = 0;
     this._level = 'normal';     // scoring strictness: easy | normal | strict
+    this._tuner = null;         // hand-calibration driver while active
+    this.onCalibrating = () => {};   // (active:boolean) — UI sync hook
   }
 
   /** Set scoring strictness (the "allowance for deviation" knob). */
   setStrictness(level) { this._level = level; }
+
+  /** Toggle guided hand calibration (auto-tune) on the live Test mirror. Aligns the
+   *  avatar's fingers/palm with the signer's — the SCORE always reads the raw camera,
+   *  so this is about trusting what you see, not inflating the grade. */
+  toggleHandCalibration() {
+    if (this._tuner) {
+      this._tuner.cancel(); this._tuner = null;
+      this.onCalibrating(false);
+      this._status('Hand calibration cancelled.', 'info');
+      return;
+    }
+    if (!this.core) { this._status('Start the camera first.', 'error'); return; }
+    this._tuner = createAutoTuner({
+      retarget: this.core.retarget,
+      onStatus: (m) => this._status(m, 'loading'),
+      onSolved: (side, tuned) => {
+        applySolvedOrientation(side, tuned);
+        configureRetarget(this.core.retarget, {});   // re-apply device tuning to the mirror
+      },
+      onDone: () => {
+        this._tuner = null;
+        this.onCalibrating(false);
+        this._status('Both hands calibrated — the mirror avatar now follows your fingers. Pick a sign and test yourself.', 'success');
+      },
+      onError: (m, { retrying }) => {
+        if (!retrying) { this._tuner = null; this.onCalibrating(false); }
+        this._status(m, 'error');
+      },
+    });
+    this.onCalibrating(true);
+  }
+  get calibrating() { return !!this._tuner; }
 
   _status(m, t = 'info') { const el = document.getElementById(this.statusId); if (el) { el.textContent = m; el.className = `status status-${t}`; } }
 
@@ -77,6 +113,7 @@ export class TestController {
 
   beginAttempt() {
     if (!this.target) { this._status('Pick a sign to practice first.', 'error'); return; }
+    if (this._tuner) { this._tuner.cancel(); this._tuner = null; this.onCalibrating(false); }
     this._buf = []; this._cut = new AutoCut(); this._start = performance.now(); this.capturing = true;
     this._status(`Sign "${this.target}" now…`, 'loading');
   }
@@ -85,6 +122,7 @@ export class TestController {
   endAttempt() { if (this.capturing) this._finish(); }
 
   _onFrame(results, frame) {
+    this._tuner?.feed(results);
     if (!this.capturing) return;
     frame.t = performance.now() - this._start;
     this._buf.push(frame);
@@ -96,12 +134,17 @@ export class TestController {
     this.capturing = false;
     const frames = trimFrames(this._buf);
     if (!frames || frames.length < 5) { this._status('Attempt too short — try again.', 'error'); return; }
+    // Shoulder frame if visible; null is fine — hand-only references never score
+    // location, so an out-of-frame shoulder must not hard-reject the attempt.
     const calib = calibFromFrames(frames);
-    if (!calib) { this._status('Could not see your shoulders — step back and try again.', 'error'); return; }
     const verdict = verifyAgainstTarget(frames, calib, this.target, this.templates, this._level);
     this._status(`${verdict.pass ? '✅' : '❌'} ${this.target}: ${verdict.grade} (${verdict.score}/100)`, verdict.pass ? 'success' : 'error');
     this.onResult(verdict);
   }
 
-  stop() { this.capturing = false; this.core?.stop(); this.core = null; }
+  stop() {
+    this.capturing = false;
+    if (this._tuner) { this._tuner.cancel(); this._tuner = null; this.onCalibrating(false); }
+    this.core?.stop(); this.core = null;
+  }
 }

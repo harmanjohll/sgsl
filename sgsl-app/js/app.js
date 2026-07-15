@@ -22,8 +22,24 @@ import { LearnController } from './learn.js';
 
 // Bump on every deploy — the header label is how users see the site updated.
 // Set from JS so a stale cached bundle shows its own (old) number.
-const APP_VERSION = 'v1.1.0 · 15 Jul 2026';
+const APP_VERSION = 'v1.2.0 · 15 Jul 2026';
 document.getElementById('app-version').textContent = APP_VERSION;
+
+// ─── Header ⚙: app-global avatar settings popover ───────────
+{
+  const btn = document.getElementById('btn-settings');
+  const pop = document.getElementById('settings-popover');
+  btn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pop?.classList.toggle('hidden');
+    btn.classList.toggle('open', !pop?.classList.contains('hidden'));
+  });
+  document.addEventListener('click', (e) => {
+    if (!pop || pop.classList.contains('hidden') || pop.contains(e.target)) return;
+    pop.classList.add('hidden');
+    btn?.classList.remove('open');
+  });
+}
 
 // ─── Tab switching ──────────────────────────────────────────
 const tabs = document.querySelectorAll('.tab');
@@ -52,6 +68,9 @@ tabs.forEach(tab => {
 function resetTestUI() {
   const b = (id, dis) => { const el = document.getElementById(id); if (el) el.disabled = dis; };
   b('btn-test-start', false); b('btn-test-attempt', true); b('btn-test-done', true);
+  b('btn-test-calibrate', true);
+  const cb = document.getElementById('btn-test-calibrate');
+  if (cb) cb.textContent = '✨ Calibrate hands';
   document.getElementById('test-camera-status')?.classList.remove('hidden');
   // Stale sign buttons from the previous camera session would call setTarget on a
   // stopped core and re-enable Attempt — clear them until the camera restarts.
@@ -180,8 +199,9 @@ function wireFineTunePanel(playbackRef) {
       if (isFinite(v) && Math.abs(v - FT_NEUTRAL[key]) > 1e-9) ft[key] = v;
     }
     saveFineTune(ft);
-    // Preview the change: replay whatever sign is selected (profile re-applies on play).
-    if (editLabel) {
+    // Preview the change: replay the selected sign — only while Learn is showing (the
+    // popover is app-global now; a hidden avatar must not replay under Test/Contribute).
+    if (editLabel && activeTab === 'learn') {
       clearTimeout(editReplayTimer);
       editReplayTimer = setTimeout(() => playbackRef()?.playLabel(editLabel), 250);
     }
@@ -421,6 +441,10 @@ async function initTest() {
   const startBtn = document.getElementById('btn-test-start');
   const attemptBtn = document.getElementById('btn-test-attempt');
   const doneBtn = document.getElementById('btn-test-done');
+  const calibBtn = document.getElementById('btn-test-calibrate');
+  testCtl.onCalibrating = (active) => {
+    if (calibBtn) calibBtn.textContent = active ? '✨ Calibrating: cancel' : '✨ Calibrate hands';
+  };
   startBtn?.addEventListener('click', async () => {
     startBtn.disabled = true;
     // Fresh camera session = fresh session tally (it read "3/7 passed" forever otherwise).
@@ -430,11 +454,13 @@ async function initTest() {
     const ok = await testCtl.start();
     document.getElementById('test-camera-status')?.classList.add('hidden');
     if (!ok) { startBtn.disabled = false; return; }
+    if (calibBtn) calibBtn.disabled = false;
     const labels = await testCtl.loadTemplates();
     renderTestList(labels);
   });
-  attemptBtn?.addEventListener('click', () => { testCtl.beginAttempt(); doneBtn.disabled = false; });
+  attemptBtn?.addEventListener('click', () => { testCtl.beginAttempt(); doneBtn.disabled = false; testCtl.onCalibrating(false); });
   doneBtn?.addEventListener('click', () => testCtl.endAttempt());
+  calibBtn?.addEventListener('click', () => testCtl.toggleHandCalibration());
 
   const STRICT_LEVELS = ['easy', 'normal', 'strict'];
   const STRICT_LABELS = ['Easy', 'Normal', 'Strict'];

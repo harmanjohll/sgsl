@@ -160,5 +160,60 @@ const ref = makeSign({ shape: 'flat', path: 'wave' });
   check('hand-only vs hand-only: identical passes', both.pass === true, `(score ${both.score})`);
 }
 
+// 14) wrist-tilt invariance: the same handshape held at a tilted wrist angle is the
+//     SAME sign (rotation-normalized shape). Before: 10° of tilt scored like a
+//     different sign entirely.
+{
+  const rot = (hand, deg) => {
+    const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a), [wx, wy] = hand[0];
+    return hand.map(p => [wx + (p[0] - wx) * c - (p[1] - wy) * s, wy + (p[0] - wx) * s + (p[1] - wy) * c, 0]);
+  };
+  const tilted = ref.frames.map(f => ({ ...f, rightHand: rot(f.rightHand, 14) }));
+  const r = scoreAttempt(tilted, ref.calib, ref.frames, ref.calib);
+  check('14° wrist tilt still passes high', r.pass === true && r.score >= 85, `(score ${r.score})`);
+  const fist = makeSign({ shape: 'fist', path: 'wave' });
+  const diff = scoreAttempt(fist.frames, fist.calib, ref.frames, ref.calib).score;
+  check('tilt tolerance keeps shapes separable', diff < r.score - 15, `(diff ${diff} vs tilted ${r.score})`);
+}
+// 15) mirrored performance (left-handed signer) passes and is flagged
+{
+  const mirrored = ref.frames.map(f => ({
+    ...f,
+    rightHand: null,
+    leftHand: f.rightHand.map(p => [1 - p[0], p[1], 0]),
+    pose: f.pose.map((p, i) => {
+      const q = [1 - p[0], p[1], p[2], p[3]];
+      return q;
+    }).map((p, i, arr) => i === 15 ? arr[16] : i === 16 ? arr[15] : i === 11 ? arr[12] : i === 12 ? arr[11] : p),
+  }));
+  const calibM = { shoulderMid: [1 - ref.calib.shoulderMid[0], ref.calib.shoulderMid[1]], shoulderWidth: ref.calib.shoulderWidth };
+  const r = scoreAttempt(mirrored, calibM, ref.frames, ref.calib);
+  check('mirrored (left-handed) attempt passes', r.pass === true && r.score >= 85, `(score ${r.score})`);
+  check('mirrored attempt is flagged', r.mirrored === true);
+}
+// 16) transition frames (raising the hand in, dropping it after) cost nothing
+{
+  const rest = (n) => Array.from({ length: n }, (_, i) => {
+    const u = i / n;
+    return { t: 0, rightHand: hand(0.5, 0.85 - u * 0.3, 'flat'), leftHand: null, pose: pose(0.5, 0.85 - u * 0.3, 0.5, 0.3) };
+  });
+  const padded = [...rest(10), ...ref.frames, ...rest(10).reverse()];
+  const r = scoreAttempt(padded, ref.calib, ref.frames, ref.calib);
+  check('lead-in/lead-out transitions are free', r.pass === true && r.score >= 85, `(score ${r.score})`);
+}
+// 17) a template hand present in only a few frames is tracker noise, not the sign —
+//     it must not fine the attempt (shipped one.json had 5 stray leftHand frames of 28).
+{
+  const glitchy = ref.frames.map((f, i) => i % 6 === 0 ? { ...f, leftHand: hand(0.3, 0.7, 'flat') } : f);
+  const r = scoreAttempt(ref.frames, ref.calib, glitchy, ref.calib);
+  check('rare glitch hand in template is ignored', r.pass === true && r.score >= 90, `(score ${r.score})`);
+}
+// 18) feedback comes from the alignment path only: a perfect match must not complain
+{
+  const r = scoreAttempt(ref.frames, ref.calib, ref.frames, ref.calib);
+  const spurious = r.feedback.some(f => f.includes('missing') || f.includes('drifted') || f.includes('off'));
+  check('perfect match gets no spurious complaints', !spurious, `(feedback: ${r.feedback.join(' | ')})`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 process.exit(failed ? 1 : 0);
