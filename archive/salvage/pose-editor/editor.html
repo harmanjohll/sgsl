@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SgSL Pose Editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/pose-editor.css">
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@0.6.7/lib/three-vrm.js"></script>
+</head>
+<body>
+  <header class="header">
+    <h1>SgSL Pose Editor</h1>
+    <nav class="tabs">
+      <a class="tab" href="/">← Back to Viewer</a>
+    </nav>
+  </header>
+
+  <main class="editor-main">
+    <aside class="editor-sidebar">
+      <div class="editor-section">
+        <label for="ed-label" class="ed-label">Sign label</label>
+        <input type="text" id="ed-label" class="rec-input" placeholder="e.g. hello">
+      </div>
+
+      <div class="editor-section">
+        <h3 class="ed-h3">Bone controls</h3>
+        <p class="ed-hint">Drag sliders to pose Mei. Each slider rotates the bone around its local axis (in degrees).</p>
+        <div id="bone-controls" class="bone-controls"></div>
+      </div>
+
+      <div class="editor-section">
+        <h3 class="ed-h3">Quick actions</h3>
+        <div class="ed-btn-row">
+          <button id="btn-reset-pose" class="btn">Reset to rest</button>
+          <button id="btn-mirror-pose" class="btn">Mirror L↔R</button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="editor-stage">
+      <div id="ed-viewport" class="viewport editor-viewport"></div>
+
+      <div class="timeline-panel">
+        <div class="timeline-controls">
+          <button id="btn-add-kf" class="btn btn-record">+ Add keyframe at t</button>
+          <label class="t-control">t (ms):
+            <input type="number" id="ed-t" value="0" min="0" step="100" class="rec-input ed-num">
+          </label>
+          <button id="btn-play-preview" class="btn">▶ Preview</button>
+          <button id="btn-stop-preview" class="btn">■ Stop</button>
+        </div>
+        <div id="kf-list" class="kf-list">
+          <p class="ed-hint">No keyframes yet. Pose Mei, set a t, click "Add keyframe".</p>
+        </div>
+      </div>
+
+      <div class="editor-actions">
+        <button id="btn-load-existing" class="btn">Load existing</button>
+        <button id="btn-save-curated" class="btn btn-save">Save curated sign</button>
+        <span id="ed-status" class="status status-info">Ready.</span>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/pose-editor.js"></script>
+</body>
+</html>
