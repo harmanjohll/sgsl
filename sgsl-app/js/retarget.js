@@ -21,6 +21,7 @@
 
 import * as Kalidokit from 'kalidokit';
 import { LandmarkFilter } from './one-euro.js';
+import { faceRigFor, solveFaceNMM } from './face-nmm.js';
 
 const remap = Kalidokit.Utils.remap;
 const clamp = Kalidokit.Utils.clamp;
@@ -892,6 +893,14 @@ export class SMPLXRetarget {
     if (faceLandmarks && faceLandmarks.length >= 468) {
       riggedFace = Kalidokit.Face.solve(faceLandmarks, solveOpts);
       if (riggedFace) this._rigFace(vrm, riggedFace);
+    }
+    // Brows/eyes (SgSL grammar): ARKit blendshapes when present (live v2 + new
+    // recordings), else Kalidokit's geometric brow ratio; no face -> decay to neutral.
+    const faceRig = faceRigFor(vrm);
+    if (faceRig) {
+      faceRig.setTracked(riggedFace || results.faceBlendshapes
+        ? solveFaceNMM(results.faceBlendshapes, riggedFace?.brow)
+        : null);
     }
 
     const poseVisible = pose2DLandmarks

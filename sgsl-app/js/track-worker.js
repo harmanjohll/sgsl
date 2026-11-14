@@ -93,13 +93,22 @@ async function loadFace() {
   try {
     face = await makeOne(vision.FaceLandmarker, {
       baseOptions: { modelAssetPath: FACE_MODEL },
-      runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: false,
+      runningMode: 'VIDEO', numFaces: 1, outputFaceBlendshapes: true,   // brows = SgSL grammar (face-nmm.js)
     }, 'face');
     status('face ✓ — full tracking');
   } catch (e) {
     face = null;
     status(`face unavailable (${e.message}); head/expression off, hands OK`);
   }
+}
+
+// ARKit blendshape scores as {name: score}; packed per frame by face-nmm.js.
+function blendMap(faceRes) {
+  const cats = faceRes?.faceBlendshapes?.[0]?.categories;
+  if (!cats || !cats.length) return null;
+  const m = {};
+  for (const c of cats) m[c.categoryName] = c.score;
+  return m;
 }
 
 function detect(bitmap, ts) {
@@ -136,6 +145,7 @@ function detect(bitmap, ts) {
     pose: poseRes?.landmarks?.[0] || null,
     poseWorld: poseRes?.worldLandmarks?.[0] || null,
     face: faceRes?.faceLandmarks?.[0] || null,
+    faceBlend: blendMap(faceRes),
     hands: lastHands,
   });
 }

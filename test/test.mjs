@@ -72,7 +72,9 @@ function synthSign(positionAt, n = 21) {
   const t2 = parseSentence('the cat');
   check('gloss: drops article "the"', t2.every(x => x.sign !== 'the') && t2.some(x => x.sign === 'cat'));
   const t3 = parseSentence('what is your name?');
-  check('gloss: question flag set', t3.length > 0 && t3.every(x => x.nmm === 'question'));
+  check('gloss: wh-question flag set (furrowed brows)', t3.length > 0 && t3.every(x => x.nmm === 'wh-question'));
+  const t3b = parseSentence('are you hungry?');
+  check('gloss: yes/no question flag set (raised brows)', t3b.length > 0 && t3b.every(x => x.nmm === 'question'));
 }
 
 // ─── sentence-engine resolveLabels ──────────────────────────
