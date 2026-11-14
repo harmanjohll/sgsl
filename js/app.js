@@ -22,7 +22,7 @@ import { LearnController } from './learn.js';
 
 // Bump on every deploy — the header label is how users see the site updated.
 // Set from JS so a stale cached bundle shows its own (old) number.
-const APP_VERSION = 'v1.2.0 · 15 Jul 2026';
+const APP_VERSION = 'v1.3.0 · 14 Nov 2026';
 document.getElementById('app-version').textContent = APP_VERSION;
 
 // ─── Header ⚙: app-global avatar settings popover ───────────

@@ -14,6 +14,8 @@
    each channel is an array of [x, y, z, (visibility)] landmarks.
    ============================================================ */
 
+import { lerpFaceBS } from './face-nmm.js';
+
 // 5th-order minimum-jerk easing: 0 velocity & acceleration at both ends.
 export function mjEval(x0, xf, t) {
   const t3 = t * t * t;
@@ -58,6 +60,7 @@ export function lerpFrame(a, b, t) {
     leftHandWorld:  both(a.leftHandWorld, b.leftHandWorld),
     rightHandWorld: both(a.rightHandWorld, b.rightHandWorld),
     face:      lerpLM(a.face, b.face, t),
+    faceBS:    lerpFaceBS(a.faceBS, b.faceBS, t),
     pose:      lerpLM(a.pose, b.pose, t),
     poseWorld: lerpLM(a.poseWorld, b.poseWorld, t),
   };

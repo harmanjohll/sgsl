@@ -17,6 +17,7 @@ import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { AutoCut, trimFrames } from './autocut.js';
 import { toResults } from './tasks-adapter.js';
+import { packFaceBS, unpackFaceBS } from './face-nmm.js';
 import { createAutoTuner } from './autotune-driver.js';
 import { QualityGate, framingScore } from './quality.js';
 import { lerpFrame } from './interp.js';
@@ -602,6 +603,8 @@ function extractFrame(results) {
   if (results.faceLandmarks && results.faceLandmarks.length >= 468) {
     frame.face = results.faceLandmarks.map(lm => [lm.x, lm.y, lm.z]);
   }
+  const bs = packFaceBS(results.faceBlendshapes);   // brows/eyes (SgSL grammar)
+  if (bs) frame.faceBS = bs;
   return frame;
 }
 
@@ -1074,6 +1077,7 @@ function renderPreviewFrame(frame) {
     poseLandmarks: toMP(frame.pose),
     za: toMP(frame.poseWorld || frame.pose),
     faceLandmarks: toMP(frame.face),
+    faceBlendshapes: unpackFaceBS(frame.faceBS),
     rightHandLandmarks: toMP(frame.rightHand),
     leftHandLandmarks: toMP(frame.leftHand),
     // Recorded 3D world hands were silently DROPPED here, so replay/preview drove the
