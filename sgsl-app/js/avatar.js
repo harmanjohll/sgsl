@@ -14,6 +14,8 @@
 const REST_REBIAS_FRAMES = 15;   // animation frames of silence before drift begins
 const REST_REBIAS_LERP = 0.1;
 
+import { faceRigFor } from './face-nmm.js';
+
 export class SMPLXAvatar {
   constructor(containerEl) {
     this.container = typeof containerEl === 'string'
@@ -119,6 +121,12 @@ export class SMPLXAvatar {
         THREE.VRM.from(gltf).then((vrm) => {
           this.scene.add(vrm.scene);
           this.vrm = vrm;
+          // VRoid stores morph names per PRIMITIVE (primitives[].extras.targetNames); this
+          // three.js only reads mesh-level names, so its dictionaries come out as bare
+          // indices. Keep the name lists so face-nmm.js can find the brow morphs.
+          vrm.__targetNameLists = (gltf.parser?.json?.meshes || [])
+            .map((m) => m.extras?.targetNames || m.primitives?.[0]?.extras?.targetNames)
+            .filter(Array.isArray);
           this.vrm.scene.rotation.y = Math.PI;
 
           this._setRestPose(vrm);
@@ -284,7 +292,8 @@ export class SMPLXAvatar {
   markActive() { this._silentFrames = 0; }
 
   /** Non-manual marker (SgSL grammar on the face/head) for playback:
-   *  'question' — brow raise (VRM 'Fun' preset) + slight head-forward lean;
+   *  'question' — raised brows (Fcl_BRW_Surprised via face-nmm.js) + slight head-forward lean;
+   *  'wh-question' — furrowed brows + slight head-forward lean;
    *  'negation' — head shake; null — blend back to neutral.
    *  Head/neck motion composes on a BASE captured when the marker engages
    *  (absolute overwrite per frame, never additive) so it cannot compound,
@@ -311,30 +320,37 @@ export class SMPLXAvatar {
       if (st.kind) {
         if (st.headBase && head) head.quaternion.copy(st.headBase);
         if (st.neckBase && neck) neck.quaternion.copy(st.neckBase);
-        this.vrm.blendShapeProxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0);
-        this.vrm.blendShapeProxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Angry, 0);
+        faceRigFor(this.vrm)?.setScripted(null);
       }
       st.kind = null;
       return;
     }
     if (!st.kind) return;
 
-    const proxy = this.vrm.blendShapeProxy;
+    // Brows are the grammar. These used to drive the whole-face 'Fun'/'Angry'
+    // presets (a grin on every question); now they drive brow-only morphs.
+    const face = faceRigFor(this.vrm);
     if (st.kind === 'question') {
       if (neck && st.neckBase) {
         const lean = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.10 * st.w);
         neck.quaternion.copy(st.neckBase).multiply(lean);
       }
-      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0.45 * st.w);   // brow-raise stand-in
+      face?.setScripted({ raise: 0.9 * st.w, wide: 0.4 * st.w });
+    } else if (st.kind === 'wh-question') {
+      if (neck && st.neckBase) {
+        const lean = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.10 * st.w);
+        neck.quaternion.copy(st.neckBase).multiply(lean);
+      }
+      face?.setScripted({ furrow: 0.9 * st.w, squint: 0.3 * st.w });
     } else if (st.kind === 'negation') {
       if (head && st.headBase) {
         st.phase += 0.32;
         const shake = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.sin(st.phase) * 0.13 * st.w);
         head.quaternion.copy(st.headBase).multiply(shake);
       }
-      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Angry, 0.20 * st.w);  // slight frown
+      face?.setScripted({ furrow: 0.5 * st.w });
     } else if (st.kind === 'topic') {
-      proxy?.setValue(THREE.VRMSchema.BlendShapePresetName.Fun, 0.25 * st.w);
+      face?.setScripted({ raise: 0.5 * st.w });   // topic marker: brows up, held lighter
     }
   }
 

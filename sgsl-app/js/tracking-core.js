@@ -18,6 +18,7 @@ import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { HandRouter } from './hand-router.js';
 import { toResults } from './tasks-adapter.js';
+import { packFaceBS } from './face-nmm.js';
 import { configureRetarget } from './calib-profile.js';
 
 const HAND_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
@@ -232,5 +233,7 @@ export function extractFrame(results) {
   const pw = results.za || results.ea;
   if (pw) frame.poseWorld = pw.map((lm) => [lm.x, lm.y, lm.z, lm.visibility ?? 0]);
   if (results.faceLandmarks && results.faceLandmarks.length >= 468) frame.face = results.faceLandmarks.map((lm) => [lm.x, lm.y, lm.z]);
+  const bs = packFaceBS(results.faceBlendshapes);
+  if (bs) frame.faceBS = bs;
   return frame;
 }

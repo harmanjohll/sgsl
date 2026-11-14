@@ -20,6 +20,7 @@
 import { SMPLXAvatar } from './avatar.js';
 import { SMPLXRetarget } from './retarget.js';
 import { lerpFrame } from './interp.js';
+import { unpackFaceBS } from './face-nmm.js';
 import * as signsSource from './signs-source.js';
 import { configureRetarget } from './calib-profile.js';
 import { getEditsFor } from './sign-edits.js';
@@ -57,6 +58,7 @@ export class Playback {
       poseLandmarks: toMP(frame.pose),
       za: toMP(frame.poseWorld || frame.pose),
       faceLandmarks: toMP(frame.face),
+      faceBlendshapes: unpackFaceBS(frame.faceBS),
       rightHandLandmarks: toMP(frame.rightHand),
       leftHandLandmarks: toMP(frame.leftHand),
       // Recorded 3D world hands were silently DROPPED here, so replay/preview drove the

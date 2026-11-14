@@ -40,6 +40,7 @@ export function toResults(payload) {
     poseLandmarks: pose,
     za: payload.poseWorld || null,            // Holistic called this `za`; retarget reads `za || ea`
     faceLandmarks: payload.face || null,
+    faceBlendshapes: payload.faceBlend || null,   // {name: score}; face-nmm.js
     leftHandLandmarks: null,
     rightHandLandmarks: null,
     leftHandWorldLandmarks: null,

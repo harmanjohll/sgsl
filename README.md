@@ -70,7 +70,17 @@ Dev API mode (optional, legacy FastAPI on the same origin): append `?api=1`.
 ```bash
 node test/test.mjs           # interpolation, fidelity metric, gloss, resolver, sentence engine
 node test/replay_error.mjs   # fails if any committed v2 sign exceeds the fidelity threshold
+node test/face-nmm.test.mjs  # brow/eye grammar: blendshape solve, packing, morph rig
+node test/face_smoke.mjs     # local only (Playwright): real avatar, brows on the mesh, face_*.png
 ```
+
+## Face grammar (v1.3)
+
+Brows carry SgSL grammar: raised for yes/no questions, furrowed for wh-questions.
+`sgsl-app/js/face-nmm.js` reads MediaPipe's ARKit blendshapes (ported from the
+`sign1` mirror) and drives the avatar's brow and eye morphs. Live mirroring and new
+recordings carry it (`frame.faceBS`); older recordings fall back to a geometric
+brow-raise estimate. Text to sign marks wh-questions separately from yes/no questions.
 
 ## The accuracy loop
 

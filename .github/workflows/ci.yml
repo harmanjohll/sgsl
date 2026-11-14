@@ -28,6 +28,9 @@ jobs:
       - name: Recognition invariances
         run: node test/recognition.test.mjs
 
+      - name: Face non-manual markers (brows)
+        run: node test/face-nmm.test.mjs
+
       - name: Replay-fidelity guard (committed signs)
         run: node test/replay_error.mjs
 

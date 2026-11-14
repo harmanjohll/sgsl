@@ -13,7 +13,8 @@
    7. Copula dropped (is, am, are, was, were)
 
    Output: Array of { sign: string, nmm: string|null }
-   where nmm can be: 'question', 'negation', 'topic', null
+   where nmm can be: 'question' (yes/no: raised brows), 'wh-question'
+   (furrowed brows), 'negation', 'topic', null
    ============================================================ */
 
 // Words to drop (articles, prepositions, copula, auxiliaries)
@@ -222,9 +223,11 @@ export function parseSentence(text) {
   }
 
   // Build output with NMM annotations
+  // SgSL brow grammar: a wh-word question furrows the brows; a yes/no question raises them.
+  const qKind = questionTokens.length ? 'wh-question' : 'question';
   const result = reordered.map(sign => {
     let nmm = null;
-    if (isQuestion) nmm = 'question';
+    if (isQuestion) nmm = qKind;
     else if (hasNegation) nmm = 'negation';
     return { sign, nmm };
   });
