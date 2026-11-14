@@ -1,0 +1,218 @@
+/* ============================================================
+   Pose Editor styles
+   ============================================================ */
+
+.editor-main {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+  padding: 16px;
+  height: calc(100vh - 64px);
+  box-sizing: border-box;
+}
+
+.editor-sidebar {
+  background: rgba(20, 24, 56, 0.85);
+  border-radius: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ed-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8888cc;
+}
+
+.ed-h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #ccccee;
+}
+
+.ed-hint {
+  font-size: 12px;
+  color: #8888aa;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.bone-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.bone-group {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.bone-group > .bone-group-title {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #aabbff;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 0;
+  user-select: none;
+  list-style: none;
+}
+
+.bone-group > .bone-group-title::-webkit-details-marker { display: none; }
+
+.bone-group > .bone-group-title::before {
+  content: '▶ ';
+  display: inline-block;
+  font-size: 9px;
+  margin-right: 4px;
+  transition: transform 0.15s;
+}
+
+.bone-group[open] > .bone-group-title::before {
+  transform: rotate(90deg);
+}
+
+.bone-group .bone-row {
+  margin-top: 4px;
+}
+
+.bone-row {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.bone-row > .bone-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ccccee;
+  margin-bottom: 4px;
+}
+
+.bone-axis-row {
+  display: grid;
+  grid-template-columns: 16px 1fr 40px;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8888aa;
+}
+
+.bone-axis-row input[type="range"] {
+  width: 100%;
+}
+
+.bone-axis-row .axis-val {
+  font-family: monospace;
+  font-size: 11px;
+  text-align: right;
+  color: #aaaaff;
+}
+
+.editor-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.editor-viewport {
+  flex: 1 1 auto;
+  min-height: 360px;
+}
+
+.timeline-panel {
+  background: rgba(20, 24, 56, 0.85);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.timeline-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.t-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8888cc;
+}
+
+.ed-num {
+  width: 90px;
+}
+
+.kf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.kf-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 24px 60px 24px;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.kf-row.active {
+  outline: 1px solid #5577cc;
+  background: rgba(40, 60, 120, 0.4);
+}
+
+.kf-t {
+  font-family: monospace;
+  color: #aaaaff;
+}
+
+.kf-meta {
+  color: #8888aa;
+  font-size: 11px;
+}
+
+.kf-action {
+  background: transparent;
+  border: 1px solid #444466;
+  color: #ccccee;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.kf-action:hover {
+  background: rgba(80, 100, 160, 0.4);
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

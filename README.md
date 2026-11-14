@@ -47,7 +47,7 @@ sgsl-app/            ← the GitHub Pages artifact (deploy-pages.yml uploads thi
   legacy/            the previous 2D-canvas app, archived (served, unlinked)
 tools/               extract_signs.py, build_manifest.py (dev only, not served)
 test/                test.mjs (logic) + replay_error.mjs (CI fidelity guard)
-data-archive/        reference SQL dumps (not served)
+archive/             salvaged code, research and 2025 raw signs from the retired repos (not served)
 ```
 
 ## Run locally
